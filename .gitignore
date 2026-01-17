@@ -1,0 +1,39 @@
+# Compiler files
+cache/
+out/
+artifacts/
+
+# Ignores development broadcast logs
+/broadcast/*/31337/
+/broadcast/**/dry-run/
+
+# Docs
+docs/
+
+# Dotenv file
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node modules (for dependencies like OpenZeppelin)
+node_modules/
+
+# Forge coverage
+lcov.info
+coverage/
+
+# Slither
+slither-report/
+
+# Gas reports
+gas-report.txt
