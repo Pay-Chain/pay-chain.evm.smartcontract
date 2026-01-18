@@ -5,164 +5,239 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IPayChain.sol";
 import "./libraries/FeeCalculator.sol";
 
 /**
  * @title PayChain
- * @notice Cross-chain stablecoin payment gateway contract
- * @dev Integrates with Chainlink CCIP for cross-chain messaging
+ * @notice Base contract for cross-chain payment gateway
+ * @dev This is the main contract with core payment logic.
+ *      Bridge-specific implementations inherit from this contract.
+ *
+ * Inheritance:
+ * - PayChainCCIP.sol → for EVM ↔ SVM (Solana)
+ * - PayChainHyperbridge.sol → for EVM ↔ EVM
  */
-contract PayChain is IPayChain, Ownable, ReentrancyGuard {
+abstract contract PayChain is IPayChain, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
     using FeeCalculator for uint256;
 
-    // State variables
+    // ============ State Variables ============
+
     mapping(bytes32 => Payment) public payments;
+    mapping(bytes32 => PaymentRequest) public paymentRequests;
     mapping(address => bool) public supportedTokens;
-    mapping(string => bool) public supportedChains;
-    
-    address public ccipRouter;
+
     address public feeRecipient;
-    
+
     uint256 public constant FIXED_BASE_FEE = 0.50e6; // $0.50 in 6 decimals
     uint256 public constant FEE_RATE_BPS = 30; // 0.3%
+    uint256 public constant REQUEST_EXPIRY_TIME = 15 minutes;
+    uint256 public constant PAYMENT_TIMEOUT = 1 hours;
 
-    // Events
-    event PaymentCreated(
-        bytes32 indexed paymentId,
-        address indexed sender,
-        address indexed receiver,
-        string destChainId,
-        address sourceToken,
-        address destToken,
-        uint256 amount,
-        uint256 fee,
-        string bridgeType
-    );
+    // ============ Structs ============
 
-    event PaymentExecuted(
-        bytes32 indexed paymentId,
-        bytes32 ccipMessageId
-    );
+    struct PaymentRequest {
+        bytes32 id;
+        address merchant;
+        address receiver;
+        address token;
+        uint256 amount;
+        string description;
+        uint256 expiresAt;
+        bool isPaid;
+        address payer;
+        bytes32 paymentId;
+    }
 
-    event PaymentCompleted(
-        bytes32 indexed paymentId,
-        uint256 destAmount
-    );
-
-    event PaymentRefunded(
-        bytes32 indexed paymentId,
-        uint256 refundAmount
-    );
+    // ============ Events (additional) ============
 
     event TokenSupportUpdated(address token, bool supported);
-    event ChainSupportUpdated(string chainId, bool supported);
 
-    constructor(address _ccipRouter, address _feeRecipient) Ownable(msg.sender) {
-        ccipRouter = _ccipRouter;
+    // ============ Constructor ============
+
+    constructor(address _feeRecipient) Ownable(msg.sender) {
+        require(_feeRecipient != address(0), "Invalid fee recipient");
         feeRecipient = _feeRecipient;
     }
 
+    // ============ Core Payment Functions ============
+
     /**
-     * @notice Create a new cross-chain payment
-     * @param destChainId Destination chain ID in CAIP-2 format
-     * @param receiver Receiver address on destination chain
-     * @param sourceToken Source token address
-     * @param destToken Destination token address
-     * @param amount Amount to send (before fees)
+     * @notice Create a payment request for merchants (same-chain payments)
+     * @param receiver Receiver wallet address
+     * @param token Token address for payment
+     * @param amount Amount requested
+     * @param description Description of the payment
      */
-    function createPayment(
-        string calldata destChainId,
+    function createPaymentRequest(
         address receiver,
-        address sourceToken,
-        address destToken,
-        uint256 amount
-    ) external nonReentrant returns (bytes32 paymentId) {
-        require(supportedTokens[sourceToken], "Source token not supported");
-        require(supportedChains[destChainId], "Destination chain not supported");
+        address token,
+        uint256 amount,
+        string calldata description
+    ) external nonReentrant whenNotPaused returns (bytes32 requestId) {
+        require(supportedTokens[token], "Token not supported");
         require(amount > 0, "Amount must be greater than 0");
+        require(receiver != address(0), "Invalid receiver");
 
-        // Calculate fees
-        uint256 platformFee = amount.calculatePlatformFee(FIXED_BASE_FEE, FEE_RATE_BPS);
-        uint256 totalAmount = amount + platformFee;
-
-        // Transfer tokens from sender
-        IERC20(sourceToken).safeTransferFrom(msg.sender, address(this), totalAmount);
-
-        // Generate payment ID
-        paymentId = keccak256(
+        requestId = keccak256(
             abi.encodePacked(
                 msg.sender,
                 receiver,
-                destChainId,
+                token,
                 amount,
                 block.timestamp
             )
         );
 
-        // Store payment
-        payments[paymentId] = Payment({
-            sender: msg.sender,
+        uint256 expiresAt = block.timestamp + REQUEST_EXPIRY_TIME;
+
+        paymentRequests[requestId] = PaymentRequest({
+            id: requestId,
+            merchant: msg.sender,
             receiver: receiver,
-            sourceChainId: _getChainId(),
-            destChainId: destChainId,
-            sourceToken: sourceToken,
-            destToken: destToken,
+            token: token,
             amount: amount,
-            fee: platformFee,
-            status: PaymentStatus.Pending,
-            createdAt: block.timestamp
+            description: description,
+            expiresAt: expiresAt,
+            isPaid: false,
+            payer: address(0),
+            paymentId: bytes32(0)
         });
 
-        emit PaymentCreated(
-            paymentId,
+        emit PaymentRequestCreated(
+            requestId,
             msg.sender,
             receiver,
-            destChainId,
-            sourceToken,
-            destToken,
+            token,
             amount,
-            platformFee,
-            "CCIP"
+            expiresAt
         );
 
-        return paymentId;
+        return requestId;
     }
 
     /**
-     * @notice Process refund for failed payment
+     * @notice Pay a payment request (same-chain payment)
+     * @param requestId Payment request ID to pay
+     */
+    function payRequest(bytes32 requestId) external nonReentrant whenNotPaused {
+        PaymentRequest storage request = paymentRequests[requestId];
+        require(request.id == requestId, "Request not found");
+        require(!request.isPaid, "Already paid");
+        require(block.timestamp <= request.expiresAt, "Request expired");
+
+        // Calculate fees
+        uint256 platformFee = request.amount.calculatePlatformFee(
+            FIXED_BASE_FEE,
+            FEE_RATE_BPS
+        );
+        uint256 totalAmount = request.amount + platformFee;
+
+        // Transfer tokens from payer
+        IERC20(request.token).safeTransferFrom(
+            msg.sender,
+            address(this),
+            totalAmount
+        );
+
+        // Transfer amount to receiver
+        IERC20(request.token).safeTransfer(request.receiver, request.amount);
+
+        // Transfer fee to fee recipient
+        IERC20(request.token).safeTransfer(feeRecipient, platformFee);
+
+        // Update request status
+        request.isPaid = true;
+        request.payer = msg.sender;
+
+        emit RequestPaymentReceived(
+            requestId,
+            msg.sender,
+            request.receiver,
+            request.token,
+            request.amount
+        );
+    }
+
+    /**
+     * @notice Process refund for failed/expired payment
      * @param paymentId Payment ID to refund
      */
     function processRefund(bytes32 paymentId) external nonReentrant {
         Payment storage payment = payments[paymentId];
-        require(payment.status == PaymentStatus.Failed, "Payment not failed");
+        require(
+            payment.status == PaymentStatus.Failed ||
+                (payment.status == PaymentStatus.Pending &&
+                    block.timestamp >= payment.createdAt + PAYMENT_TIMEOUT),
+            "Cannot refund"
+        );
         require(payment.sender != address(0), "Payment not found");
 
         payment.status = PaymentStatus.Refunded;
 
-        // Refund only the amount (fee is not refunded)
-        IERC20(payment.sourceToken).safeTransfer(payment.sender, payment.amount);
+        // Refund only the amount (fee is not refunded per PRD)
+        IERC20(payment.sourceToken).safeTransfer(
+            payment.sender,
+            payment.amount
+        );
 
         emit PaymentRefunded(paymentId, payment.amount);
     }
 
-    // Admin functions
-    function setSupportedToken(address token, bool supported) external onlyOwner {
+    // ============ Admin Functions ============
+
+    function setSupportedToken(
+        address token,
+        bool supported
+    ) external onlyOwner {
         supportedTokens[token] = supported;
         emit TokenSupportUpdated(token, supported);
     }
 
-    function setSupportedChain(string calldata chainId, bool supported) external onlyOwner {
-        supportedChains[chainId] = supported;
-        emit ChainSupportUpdated(chainId, supported);
-    }
-
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        require(_feeRecipient != address(0), "Invalid fee recipient");
         feeRecipient = _feeRecipient;
     }
 
-    // Internal functions
+    function markPaymentFailed(bytes32 paymentId) external onlyOwner {
+        Payment storage payment = payments[paymentId];
+        require(payment.status == PaymentStatus.Processing, "Not processing");
+        payment.status = PaymentStatus.Failed;
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /// @notice Receive native tokens for bridge fees
+    receive() external payable {}
+
+    // ============ View Functions ============
+
+    function getPayment(
+        bytes32 paymentId
+    ) external view returns (Payment memory) {
+        return payments[paymentId];
+    }
+
+    function getPaymentRequest(
+        bytes32 requestId
+    ) external view returns (PaymentRequest memory) {
+        return paymentRequests[requestId];
+    }
+
+    function isRequestExpired(bytes32 requestId) external view returns (bool) {
+        return block.timestamp > paymentRequests[requestId].expiresAt;
+    }
+
+    // ============ Internal Helpers ============
+
     function _getChainId() internal view returns (string memory) {
         return string(abi.encodePacked("eip155:", _uint2str(block.chainid)));
     }
@@ -179,9 +254,27 @@ contract PayChain is IPayChain, Ownable, ReentrancyGuard {
         uint256 k = length;
         while (_i != 0) {
             k--;
-            bstr[k] = bytes1(uint8(48 + _i % 10));
+            bstr[k] = bytes1(uint8(48 + (_i % 10)));
             _i /= 10;
         }
         return string(bstr);
     }
+
+    // ============ Abstract Functions (for bridge implementations) ============
+
+    /**
+     * @dev Create a cross-chain payment - implemented by bridge contracts
+     */
+    function createPayment(
+        bytes calldata destChainId,
+        bytes calldata receiver,
+        address sourceToken,
+        address destToken,
+        uint256 amount
+    ) external virtual returns (bytes32 paymentId);
+
+    /**
+     * @dev Execute a pending payment - implemented by bridge contracts
+     */
+    function executePayment(bytes32 paymentId) external payable virtual;
 }
