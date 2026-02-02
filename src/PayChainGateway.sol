@@ -206,7 +206,7 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             destToken,
             amount,
             platformFee,
-            bridgeType == 0 ? "CCIP" : "Hyperbridge"
+            bridgeType == 0 ? "Hyperbridge" : "CCIP"
         );
     }
 

@@ -14,7 +14,7 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
     // ============ State Variables ============
 
     /// @notice Mapping from destChainId (string) => bridgeType (uint8) => Adapter Address
-    /// @dev bridgeType: 0 = CCIP, 1 = Hyperbridge (mapped in Gateway)
+    /// @dev bridgeType: 0 = Hyperbridge (Default), 1 = CCIP
     mapping(string => mapping(uint8 => address)) public adapters;
 
     // ============ Events ============

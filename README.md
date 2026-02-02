@@ -12,7 +12,7 @@ The **Pay-Chain EVM Smart Contracts** module acts as the secure execution layer 
 1.  **Trustless Execution**: No hidden admin backdoors for moving user funds (except strictly defined emergency pauses).
 2.  **Asset Agnosticism**: Accept any ERC20 (USDC, USDT, WETH) and swap to the target currency automatically.
 3.  **Fail-Safe Mechanism**: Guaranteed 100% principal refund if the cross-chain transaction cannot be delivered.
-4.  **Modular Architecture**: Pluggable "Adapters" for different bridges (CCIP, Hyperbridge) to avoid vendor lock-in.
+4.  **Modular Architecture**: Pluggable "Adapters" for different bridges (Hyperbridge, CCIP) to avoid vendor lock-in.
 
 ---
 
@@ -48,41 +48,41 @@ sequenceDiagram
 ```
 
 ### 2.2 Payment Flow
-the lifecycle of a payment from source chain execution to destination chain settlement.
+The lifecycle of a payment from source chain execution to destination chain settlement.
 
 ```mermaid
 flowchart TD
     subgraph Source Chain
         S_User[User] -->|Calls| S_Gateway[PayChainGateway]
-        S_Gateway -->|1. Transfer Token| S_Vault[PayChainVault]
-        S_Gateway -->|2. Calc Fee| S_FeeCalc[FeeCalculator]
-        S_Gateway -->|3. Route| S_Router[PayChainRouter]
+        S_Gateway -->|"1. Transfer Token"| S_Vault[PayChainVault]
+        S_Gateway -->|"2. Calc Fee"| S_FeeCalc[FeeCalculator]
+        S_Gateway -->|"3. Route"| S_Router[PayChainRouter]
         
-        S_Router -->|Determine Adapter| S_Adapter{Bridge Adapter}
-        S_Adapter -->|CCIP| S_CCIP[CCIP Sender]
-        S_Adapter -->|Hyperbridge| S_HB[Hyperbridge Sender]
+        S_Router -->|"Determine Adapter"| S_Adapter{Bridge Adapter}
+        S_Adapter -->|Hyperbridge - Default| S_HB[Hyperbridge Sender]
+        S_Adapter -->|CCIP - Backup| S_CCIP[CCIP Sender]
     end
 
     subgraph Bridges
-        S_CCIP -.->|Cross-Chain Message| D_CCIP[CCIP Router]
-        S_HB -.->|Cross-Chain Message| D_HB[Hyperbridge Core]
+        S_HB -.->|"Cross-Chain Message"| D_HB[Hyperbridge Core]
+        S_CCIP -.->|"Cross-Chain Message"| D_CCIP[CCIP Router]
     end
 
     subgraph Destination Chain
-        D_CCIP -->|Receive| D_Receiver[Adapter Receiver]
-        D_HB -->|Receive| D_Receiver
+        D_HB -->|Receive| D_Receiver[Adapter Receiver]
+        D_CCIP -->|Receive| D_Receiver
         
         D_Receiver -->|Callback| D_Gateway[PayChainGateway]
         
-        D_Gateway -->|Check Token Need?| D_CheckToken{Swap Needed?}
+        D_Gateway -->|"Check Token Need?"| D_CheckToken{Swap Needed?}
         
         D_CheckToken -->|Yes| D_Swapper[TokenSwapper]
-        D_Swapper -->|Uniswap V4| D_Dex[DEX Pool]
-        D_Dex -->|Swapped Token| D_Gateway
+        D_Swapper -->|"Uniswap V4"| D_Dex[DEX Pool]
+        D_Dex -->|"Swapped Token"| D_Gateway
         
         D_CheckToken -->|No| D_Direct[Direct Transfer]
         
-        D_Gateway -->|Release Funds| D_Vault[PayChainVault]
+        D_Gateway -->|"Release Funds"| D_Vault[PayChainVault]
         D_Vault -->|Transfer| D_Merchant[Merchant Wallet]
     end
 ```
@@ -169,8 +169,8 @@ classDiagram
     PayChainGateway --> TokenRegistry : 4. Validate Inputs
     
     PayChainRouter --> IBridgeAdapter : Delegate to specific bridge
-    IBridgeAdapter <|-- CCIPSender
     IBridgeAdapter <|-- HyperbridgeSender
+    IBridgeAdapter <|-- CCIPSender
 ```
 
 ---
@@ -215,9 +215,13 @@ Holds all user and protocol assets. Logic-less to minimize attack surface.
 Routes messages based on destination chain ID and bridge preference.
 
 **Routing Logic:**
-1.  User specifies `bridgeType` (0 = CCIP, 1 = Hyperbridge, etc.) or `0` for auto.
+1.  User specifies `bridgeType` (0 = Hyperbridge [Default], 1 = CCIP, etc.) or uses Default config.
 2.  Router looks up `adapter[destinationChainId][bridgeType]`.
 3.  Router calls `adapter.sendMessage{value: fee}(...)`.
+
+**Bridge Priority:**
+- **Primary (Type 0)**: **Hyperbridge** (Low cost, Polkadot security).
+- **Secondary (Type 1)**: **Chainlink CCIP** (Premium cost, high security).
 
 ### 4.4 TokenSwapper (`TokenSwapper.sol`)
 Handles interaction with Uniswap V4.
@@ -263,7 +267,7 @@ event PaymentCreated(
     address sourceToken,
     uint256 amount,
     uint256 fee,
-    uint8 bridgeType
+    string bridgeType // "Hyperbridge" or "CCIP"
 );
 ```
 
@@ -291,14 +295,15 @@ event PaymentRefunded(
 
 ## 7. Integration Adapters
 
-### 7.1 Chainlink CCIP
+### 7.1 Hyperbridge (Primary)
+- **Sender**: `HyperbridgeSender.sol` interacts with `IDispatcher`.
+- **Receiver**: `HyperbridgeReceiver.sol` verifies merkle proofs (if applicable for specific host implementation) or handles `onMessage`.
+- **Cost**: Low (Polkadot Storage Proofs).
+
+### 7.2 Chainlink CCIP (Secondary)
 - **Sender**: `CCIPSender.sol` encodes `EVM2AnyMessage`.
 - **Receiver**: `CCIPReceiver.sol` implements `CCIPReceiver` abstract class.
 - **Security**: Uses `Client.EVMTokenAmount` for token handling.
-
-### 7.2 Hyperbridge (Polkadot)
-- **Sender**: `HyperbridgeSender.sol` interacts with `IDispatcher`.
-- **Receiver**: `HyperbridgeReceiver.sol` verifies merkle proofs (if applicable for specific host implementation) or handles `onMessage`.
 
 ---
 
