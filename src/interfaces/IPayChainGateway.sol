@@ -6,7 +6,7 @@ pragma solidity ^0.8.20;
  * @notice Interface for PayChain cross-chain payment gateway
  * @dev Base interface for all PayChain implementations
  */
-interface IPayChain {
+interface IPayChainGateway {
     enum PaymentStatus {
         Pending,
         Processing,
@@ -73,7 +73,23 @@ interface IPayChain {
         address sourceToken,
         address destToken,
         uint256 amount
-    ) external returns (bytes32 paymentId);
+    ) external payable returns (bytes32 paymentId);
+
+    /// @notice Create cross-chain payment with slippage protection
+    /// @param destChainId Destination chain ID (CAIP-2 encoded)
+    /// @param receiver Receiver address (encoded)
+    /// @param sourceToken Source token address
+    /// @param destToken Destination token address
+    /// @param amount Payment amount
+    /// @param minAmountOut Minimum acceptable output amount (slippage protection)
+    function createPaymentWithSlippage(
+        bytes calldata destChainId,
+        bytes calldata receiver,
+        address sourceToken,
+        address destToken,
+        uint256 amount,
+        uint256 minAmountOut
+    ) external payable returns (bytes32 paymentId);
 
     function executePayment(bytes32 paymentId) external payable;
 
@@ -93,4 +109,6 @@ interface IPayChain {
     ) external view returns (Payment memory);
 
     function isRequestExpired(bytes32 requestId) external view returns (bool);
+    
+    function retryMessage(bytes32 messageId) external;
 }

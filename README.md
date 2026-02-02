@@ -1,50 +1,347 @@
-# Pay-Chain EVM Smart Contracts
+# Pay-Chain EVM Smart Contracts - Product Requirements Document
 
-Cross-chain payment smart contracts for EVM chains built with Solidity and Foundry.
+> **Component**: EVM Smart Contracts  
+> **Status**: Implementation In Progress  
+> **Framework**: Foundry
 
-## Tech Stack
+## 1. Overview
 
-- **Language**: Solidity ^0.8.20
-- **Framework**: Foundry
-- **Testing**: Forge
-- **Dependencies**: OpenZeppelin, Chainlink CCIP
+The **Pay-Chain EVM Smart Contracts** module acts as the secure execution layer for the cross-chain stablecoin payment gateway. It handles asset custody, cross-chain message routing, atomic token swaps via DEXs, and fee management.
 
-## Getting Started
+### Key Objectives
+1.  **Trustless Execution**: No hidden admin backdoors for moving user funds (except strictly defined emergency pauses).
+2.  **Asset Agnosticism**: Accept any ERC20 (USDC, USDT, WETH) and swap to the target currency automatically.
+3.  **Fail-Safe Mechanism**: Guaranteed 100% principal refund if the cross-chain transaction cannot be delivered.
+4.  **Modular Architecture**: Pluggable "Adapters" for different bridges (CCIP, Hyperbridge) to avoid vendor lock-in.
 
-```bash
-# Install dependencies
-forge install
+---
 
-# Build contracts
-forge build
+## 2. Workflow Diagrams
 
-# Run tests
-forge test
+### 2.1 User Flow
+How the user interacts with the system from the frontend through to blockchain confirmation.
 
-# Deploy to testnet
-forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+```mermaid
+sequenceDiagram
+    actor User
+    participant Frontend
+    participant Backend
+    participant Wallet
+    participant Gateway as PayChainGateway
+
+    User->>Frontend: Select Payment Request
+    Frontend->>Backend: Request Payment Details (Target Chain/Token)
+    Backend-->>Frontend: Return txData (calldata) + Estimated Fees
+    
+    User->>Frontend: Switch Network (if needed) & Click Pay
+    Frontend->>Wallet: Prompt Transaction Signature
+    
+    User->>Wallet: Sign Transaction
+    Wallet->>Gateway: Submit Transaction (createPayment)
+    
+    Gateway-->>Wallet: Transaction Hash
+    Frontend->>Backend: Subscribe to Tx Status
+    Gateway->>Gateway: Emit PaymentCreated Event
+    
+    Note right of Gateway: Backend Indexer picks up Event
+    Backend-->>Frontend: Update Status: "Processing Cross-Chain"
 ```
 
-## Contracts
+### 2.2 Payment Flow
+the lifecycle of a payment from source chain execution to destination chain settlement.
 
-- `PayChain.sol` - Main payment gateway contract
-- `FeeCalculator.sol` - Fee calculation library
-- `interfaces/` - Contract interfaces
+```mermaid
+flowchart TD
+    subgraph Source Chain
+        S_User[User] -->|Calls| S_Gateway[PayChainGateway]
+        S_Gateway -->|1. Transfer Token| S_Vault[PayChainVault]
+        S_Gateway -->|2. Calc Fee| S_FeeCalc[FeeCalculator]
+        S_Gateway -->|3. Route| S_Router[PayChainRouter]
+        
+        S_Router -->|Determine Adapter| S_Adapter{Bridge Adapter}
+        S_Adapter -->|CCIP| S_CCIP[CCIP Sender]
+        S_Adapter -->|Hyperbridge| S_HB[Hyperbridge Sender]
+    end
 
-## Supported Networks (Phase 1)
+    subgraph Bridges
+        S_CCIP -.->|Cross-Chain Message| D_CCIP[CCIP Router]
+        S_HB -.->|Cross-Chain Message| D_HB[Hyperbridge Core]
+    end
 
-| Network | Chain ID | Type |
-|---------|----------|------|
-| Base Sepolia | 84532 | Testnet |
-| BSC Sepolia | 97 | Testnet |
+    subgraph Destination Chain
+        D_CCIP -->|Receive| D_Receiver[Adapter Receiver]
+        D_HB -->|Receive| D_Receiver
+        
+        D_Receiver -->|Callback| D_Gateway[PayChainGateway]
+        
+        D_Gateway -->|Check Token Need?| D_CheckToken{Swap Needed?}
+        
+        D_CheckToken -->|Yes| D_Swapper[TokenSwapper]
+        D_Swapper -->|Uniswap V4| D_Dex[DEX Pool]
+        D_Dex -->|Swapped Token| D_Gateway
+        
+        D_CheckToken -->|No| D_Direct[Direct Transfer]
+        
+        D_Gateway -->|Release Funds| D_Vault[PayChainVault]
+        D_Vault -->|Transfer| D_Merchant[Merchant Wallet]
+    end
+```
 
-## Environment Variables
+### 2.3 Application Flow
+How the smart contracts interact with off-chain components (Backend, Indexer).
 
-Copy `.env.example` to `.env`:
+```mermaid
+classDiagram
+    class SmartContract_Layer {
+        +PaymentCreated Event
+        +PaymentExecuted Event
+        +PaymentRefunded Event
+    }
 
-```env
-PRIVATE_KEY=your-private-key
-BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
-BSC_SEPOLIA_RPC_URL=https://data-seed-prebsc-1-s1.binance.org:8545
-ETHERSCAN_API_KEY=your-api-key
+    class Indexer_Layer {
+        +Listen(Events)
+        +Parse(Log Data)
+        +UpdateDB(Status)
+    }
+
+    class Backend_Layer {
+        +GenerateCalldata()
+        +EstimateFees()
+        +WebSocketPush(UI)
+    }
+
+    class Database_Layer {
+        +Payments Table
+        +Transactions Table
+    }
+
+    SmartContract_Layer --> Indexer_Layer : Emits Events
+    Indexer_Layer --> Database_Layer : Writes Data
+    Backend_Layer --> Database_Layer : Reads Status
+    Backend_Layer --> SmartContract_Layer : Prepares Tx Data (Read-only)
+```
+
+---
+
+## 3. System Architecture
+
+The system uses a **Hub-and-Spoke** model. The `PayChainGateway` is the central "Hub" that coordinates all actions, while logic is delegated to specialized "Spokes" (Vault, Router, Swapper).
+
+```mermaid
+classDiagram
+    note "Core Infrastructure"
+    class PayChainGateway {
+        +createPayment()
+        +receivePayment()
+        +withdrawFees()
+    }
+    class PayChainVault {
+        -mapping(token => amount) reserves
+        +deposit()
+        +withdraw()
+        +approve()
+    }
+    class PayChainRouter {
+        -mapping(chainId => adapter) adapters
+        +routeMessage()
+        +registerAdapter()
+    }
+    
+    note "Integrations"
+    class TokenSwapper {
+        +swapDirect()
+        +swapMultiHop()
+        +validateSlippage()
+    }
+    class TokenRegistry {
+        +isTokenSupported()
+        +priceFeeds()
+    }
+    class IBridgeAdapter {
+        <<interface>>
+        +sendMessage()
+        +estimateFee()
+    }
+
+    PayChainGateway --> PayChainVault : 1. Lock/Release Assets
+    PayChainGateway --> PayChainRouter : 2. Route Message
+    PayChainGateway --> TokenSwapper : 3. Swap Tokens
+    PayChainGateway --> TokenRegistry : 4. Validate Inputs
+    
+    PayChainRouter --> IBridgeAdapter : Delegate to specific bridge
+    IBridgeAdapter <|-- CCIPSender
+    IBridgeAdapter <|-- HyperbridgeSender
+```
+
+---
+
+## 4. Detailed Component Specifications
+
+### 4.1 PayChainGateway (`PayChainGateway.sol`)
+The primary entry point for all interactions.
+
+**State Variables:**
+- `address public vault`: Address of the PayChainVault.
+- `address public router`: Address of the PayChainRouter.
+- `address public registry`: Address of the TokenRegistry.
+- `address public swapper`: Address of the TokenSwapper.
+- `address public feeRecipient`: Wallet to receive protocol fees.
+- `uint256 public constant BASE_BPS = 10000`: Basis points divisor.
+
+**Core Functions:**
+
+| Function | Visibility | Description |
+| :--- | :--- | :--- |
+| `createPayment(...)` | `external payable` | Initiates a cross-chain payment. Deducts fees, locks funds in Vault, and calls Router. |
+| `createPaymentWithSlippage(...)` | `external payable` | Same as above but defines minimum output amount for swaps. |
+| `receivePayment(...)` | `external` | Callback from Router/Adapters when a message lands on this chain. Unlocks funds or triggers swaps. |
+| `retryFailedPayment(...)` | `external` | Allows manual retry of a failed local execution (e.g., if receiver reverts). |
+
+**Failure Handling:**
+If `receivePayment` fails (e.g., receiver blacklist, swap fail):
+1.  The contract **MUST NOT REVERT** completely (to avoid bridge locking).
+2.  It MUST emit a `PaymentFailed` event.
+3.  Funds stay in the Vault, marked as "Refundable" or "Retryable" for the sender/receiver.
+
+### 4.2 PayChainVault (`PayChainVault.sol`)
+Holds all user and protocol assets. Logic-less to minimize attack surface.
+
+**Security:**
+- `AccessControl`: Only `GATEWAY_ROLE` and `SPENDER_ROLE` can trigger withdrawals.
+- `withdraw(token, to, amount)`: Moves funds.
+- `approve(token, spender, amount)`: Approves DEX router or Bridge to spend tokens.
+
+### 4.3 PayChainRouter (`PayChainRouter.sol`)
+Routes messages based on destination chain ID and bridge preference.
+
+**Routing Logic:**
+1.  User specifies `bridgeType` (0 = CCIP, 1 = Hyperbridge, etc.) or `0` for auto.
+2.  Router looks up `adapter[destinationChainId][bridgeType]`.
+3.  Router calls `adapter.sendMessage{value: fee}(...)`.
+
+### 4.4 TokenSwapper (`TokenSwapper.sol`)
+Handles interaction with Uniswap V4.
+
+**Features:**
+- **PoolKey Construction**: Automatically determines pool parameters (fee, tickSpacing).
+- **Universal Router**: Uses `V4_SWAP` commands for multi-hop execution.
+- **Slippage**: Reverts if `amountOut < minAmountOut`.
+
+---
+
+## 5. Fee Model
+
+The protocol charges a fee on top of the transaction amount to cover operational costs and generate revenue.
+
+**Formula:**
+$$
+\text{Total Charge} = \text{Amount} + \text{Protocol Fee} + \text{Bridge Fee}
+$$
+
+1.  **Protocol Fee**:
+    - `max(Fixed Fee, Percentage Fee)`
+    - Example: `max($0.50, 0.1%)`.
+    - Configured per token/chain in `feeCalculator`.
+
+2.  **Bridge Fee**:
+    - The actual gas cost charged by CCIP or Hyperbridge to deliver the message.
+    - Paid by the sender in Native Token (ETH/BNB/MATIC) or bonded token.
+
+---
+
+## 6. Events for Indexer
+
+The `PayChain.indexer` service listens for these specific events to update the database.
+
+**PaymentCreated**
+```solidity
+event PaymentCreated(
+    bytes32 indexed paymentId,
+    address indexed sender,
+    bytes32 indexed requestHash, // Links to backend PaymentRequest
+    string destChainId,
+    address sourceToken,
+    uint256 amount,
+    uint256 fee,
+    uint8 bridgeType
+);
+```
+
+**PaymentExecuted** (On Destination Chain)
+```solidity
+event PaymentExecuted(
+    bytes32 indexed paymentId,
+    address indexed receiver,
+    address destToken,
+    uint256 amountReceived
+);
+```
+
+**PaymentRefunded**
+```solidity
+event PaymentRefunded(
+    bytes32 indexed paymentId,
+    address indexed receiver,
+    uint256 amount,
+    string reason
+);
+```
+
+---
+
+## 7. Integration Adapters
+
+### 7.1 Chainlink CCIP
+- **Sender**: `CCIPSender.sol` encodes `EVM2AnyMessage`.
+- **Receiver**: `CCIPReceiver.sol` implements `CCIPReceiver` abstract class.
+- **Security**: Uses `Client.EVMTokenAmount` for token handling.
+
+### 7.2 Hyperbridge (Polkadot)
+- **Sender**: `HyperbridgeSender.sol` interacts with `IDispatcher`.
+- **Receiver**: `HyperbridgeReceiver.sol` verifies merkle proofs (if applicable for specific host implementation) or handles `onMessage`.
+
+---
+
+## 8. Development & Deployment
+
+### Directory Structure
+- `src/`: Smart contracts source code.
+- `script/`: Deployment scripts (`DeployBase.s.sol`, `DeployBSC.s.sol`, etc.).
+- `test/`: Foundry tests.
+
+### Configuration (`.env`)
+See `.env.example`. Required keys:
+- `PRIVATE_KEY`: Deployer wallet.
+- `*_RPC_URL`: RPC endpoints for targeted chains.
+- `*_CCIP_ROUTER`: Chainlink Router addresses.
+- `UNISWAP_POOL_MANAGER`: V4 Pool Manager address.
+
+### Deployment Commands
+
+**1. Base (Sepolia/Mainnet)**
+```bash
+forge script script/DeployBase.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify --etherscan-api-key $BASESCAN_API_KEY
+```
+
+**2. BSC (Testnet/Mainnet)**
+```bash
+forge script script/DeployBSC.s.sol --rpc-url $BSC_RPC_URL --broadcast --verify --etherscan-api-key $BSCSCAN_API_KEY
+```
+
+---
+
+## 9. Test Coverage
+
+We strictly adhere to "Extreme Unit Testing" principles.
+
+| Test Suite | Focus | Status |
+| :--- | :--- | :--- |
+| `PayChainGatewayTest` | End-to-end flow (Create -> Receive). | ✅ Passing |
+| `TokenSwapperV4Test` | Uniswap V4 integration, slippage, path, fuzzing. | ✅ Passing |
+| `PayChainVaultTest` | Access control, asset safety. | ✅ Passing |
+| `FeeCalculatorTest` | Math accuracy for fee computation. | ✅ Passing |
+
+Run all tests:
+```bash
+forge test
 ```
