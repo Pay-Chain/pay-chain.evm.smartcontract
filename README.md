@@ -323,6 +323,10 @@ See `.env.example`. Required keys:
 
 ### Deployment Commands
 
+**Prerequisites:**
+1.  Ensure `.env` is configured with `BASE_USDC` (or equivalent stablecoin address).
+2.  The deployment script **Validation** will fail if no bridge token is provided, ensuring Mainnet safety.
+
 **1. Base (Sepolia/Mainnet)**
 ```bash
 forge script script/DeployBase.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify --etherscan-api-key $BASESCAN_API_KEY
@@ -331,6 +335,18 @@ forge script script/DeployBase.s.sol --rpc-url $BASE_RPC_URL --broadcast --verif
 **2. BSC (Testnet/Mainnet)**
 ```bash
 forge script script/DeployBSC.s.sol --rpc-url $BSC_RPC_URL --broadcast --verify --etherscan-api-key $BSCSCAN_API_KEY
+```
+
+### Post-Deployment Verification
+After deployment, the script:
+1.  Deploys `TokenRegistry`, `Vault`, `Router`, `Gateway`.
+2.  **Validates** that a generic Stablecoin address is provided.
+3.  **Automatically registers** the bridge token in `TokenRegistry` (so `createPayment` works immediately).
+4.  Sets up `Vault` permissions.
+
+To add more supported tokens manually:
+```bash
+cast send --rpc-url <URL> <REGISTRY_ADDR> "setTokenSupport(address,bool)" <TOKEN_ADDR> true --private-key <KEY>
 ```
 
 ---

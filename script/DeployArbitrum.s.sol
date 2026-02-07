@@ -17,6 +17,36 @@ contract DeployArbitrum is DeployCommon {
         });
 
         console.log("Deploying to Arbitrum...");
-        deploySystem(config);
+        (,, TokenRegistry registry) = deploySystem(config);
+
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(deployerPrivateKey);
+
+        // Register additional tokens
+        address usdc = vm.envOr("ARBITRUM_USDC", address(0));
+        if (usdc != address(0)) {
+            registry.setTokenSupport(usdc, true);
+            console.log("Registered ARBITRUM_USDC:", usdc);
+        }
+
+        address usdt = vm.envOr("ARBITRUM_USDT", address(0));
+        if (usdt != address(0)) {
+            registry.setTokenSupport(usdt, true);
+            console.log("Registered ARBITRUM_USDT:", usdt);
+        }
+
+        address usd0 = vm.envOr("ARBITRUM_USD\u20ae0", address(0)); // USD0 - checking simple string first
+        if (usd0 != address(0)) {
+             registry.setTokenSupport(usd0, true);
+             console.log("Registered ARBITRUM_USD0:", usd0);
+        }
+
+        address weth = vm.envOr("ARBITRUM_WETH", address(0));
+        if (weth != address(0)) {
+            registry.setTokenSupport(weth, true);
+            console.log("Registered ARBITRUM_WETH:", weth);
+        }
+
+        vm.stopBroadcast();
     }
 }
