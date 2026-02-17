@@ -37,10 +37,14 @@ contract PayChainVault is Ownable, ReentrancyGuard {
     // ============ Modifiers ============
 
     modifier onlyAuthorized() {
+        _onlyAuthorized();
+        _;
+    }
+
+    function _onlyAuthorized() internal view {
         if (!authorizedSpenders[msg.sender] && msg.sender != owner()) {
             revert Unauthorized();
         }
-        _;
     }
 
     // ============ Core Logic ============

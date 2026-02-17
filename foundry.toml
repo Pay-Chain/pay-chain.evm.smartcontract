@@ -26,3 +26,11 @@ bsc_sepolia = "${BSC_SEPOLIA_RPC_URL}"
 [etherscan]
 base_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
 bsc_sepolia = { key = "${BSCSCAN_API_KEY}", url = "https://api-testnet.bscscan.com/api" }
+
+[lint]
+exclude_lints = [
+    "unaliased-plain-import",
+    "pascal-case-struct",
+    "screaming-snake-case-immutable",
+    "asm-keccak256",
+]

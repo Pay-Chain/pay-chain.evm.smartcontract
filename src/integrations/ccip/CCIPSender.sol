@@ -6,8 +6,8 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "../../interfaces/IBridgeAdapter.sol";
 import "../../vaults/PayChainVault.sol";
-import "../../ccip/IRouterClient.sol";
-import "../../ccip/Client.sol";
+import "./IRouterClient.sol";
+import "./Client.sol";
 
 /**
  * @title CCIPSender
@@ -32,6 +32,9 @@ contract CCIPSender is IBridgeAdapter, Ownable {
     
     /// @notice Default gas limit for destinations
     uint256 public constant DEFAULT_GAS_LIMIT = 200_000;
+
+    error ChainSelectorMissing(string chainId);
+    error DestinationAdapterMissing(string chainId);
 
     // ============ Constructor ============
 
@@ -65,7 +68,7 @@ contract CCIPSender is IBridgeAdapter, Ownable {
 
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
          uint64 destChainSelector = chainSelectors[message.destChainId];
-         require(destChainSelector != 0, "Chain not supported");
+         if (destChainSelector == 0) revert ChainSelectorMissing(message.destChainId);
 
          Client.EVM2AnyMessage memory ccipMessage = _buildMessage(message);
          return router.getFee(destChainSelector, ccipMessage);
@@ -73,7 +76,7 @@ contract CCIPSender is IBridgeAdapter, Ownable {
 
     function sendMessage(BridgeMessage calldata message) external payable override returns (bytes32 messageId) {
         uint64 destChainSelector = chainSelectors[message.destChainId];
-        require(destChainSelector != 0, "Chain not supported");
+        if (destChainSelector == 0) revert ChainSelectorMissing(message.destChainId);
 
         // 1. Pull tokens from Vault to Here
         vault.pushTokens(message.sourceToken, address(this), message.amount);
@@ -90,11 +93,30 @@ contract CCIPSender is IBridgeAdapter, Ownable {
         return messageId;
     }
 
+    function isRouteConfigured(string calldata chainId) external view override returns (bool) {
+        return chainSelectors[chainId] != 0 && destinationAdapters[chainId].length > 0;
+    }
+
+    function getRouteConfig(
+        string calldata chainId
+    ) external view override returns (bool configured, bytes memory configA, bytes memory configB) {
+        uint256 gasLimit = destinationGasLimits[chainId];
+        if (gasLimit == 0) {
+            gasLimit = DEFAULT_GAS_LIMIT;
+        }
+        bytes memory adapter = destinationAdapters[chainId];
+        return (
+            chainSelectors[chainId] != 0 && adapter.length > 0,
+            abi.encode(chainSelectors[chainId], gasLimit),
+            adapter
+        );
+    }
+
     // ============ Internal Helpers ============
 
     function _buildMessage(BridgeMessage calldata message) internal view returns (Client.EVM2AnyMessage memory) {
         bytes memory destAdapter = destinationAdapters[message.destChainId];
-        require(destAdapter.length > 0, "Dest adapter not set");
+        if (destAdapter.length == 0) revert DestinationAdapterMissing(message.destChainId);
 
         // Construct token amounts
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);

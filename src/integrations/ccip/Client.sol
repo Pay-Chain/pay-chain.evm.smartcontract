@@ -36,9 +36,7 @@ library Client {
         uint256 gasLimit;
     }
 
-    function _argsToBytes(
-        EVMExtraArgsV1 memory extraArgs
-    ) internal pure returns (bytes memory bts) {
+    function _argsToBytes(EVMExtraArgsV1 memory extraArgs) internal pure returns (bytes memory bts) {
         return abi.encodeWithSelector(EVM_EXTRA_ARGS_V1_TAG, extraArgs);
     }
 
@@ -50,9 +48,8 @@ library Client {
         bool allowOutOfOrderExecution;
     }
 
-    function _argsToBytes(
-        EVMExtraArgsV2 memory extraArgs
-    ) internal pure returns (bytes memory bts) {
+    function _argsToBytes(EVMExtraArgsV2 memory extraArgs) internal pure returns (bytes memory bts) {
         return abi.encodeWithSelector(EVM_EXTRA_ARGS_V2_TAG, extraArgs);
     }
 }
+

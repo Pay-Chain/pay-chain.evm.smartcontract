@@ -27,7 +27,7 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
         address _gateway,
         address _vault
     ) Ownable(msg.sender) {
-        _hyperbridgeHost = _host; // HyperApp internal var
+        _HYPERBRIDGE_HOST = _host; // HyperApp internal var
         gateway = PayChainGateway(_gateway);
         vault = PayChainVault(_vault);
     }
@@ -69,9 +69,9 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
     }
     
     // Internal state for host helper
-    address private immutable _hyperbridgeHost;
+    address private immutable _HYPERBRIDGE_HOST;
     
     function host() public view override returns (address) {
-        return _hyperbridgeHost;
+        return _HYPERBRIDGE_HOST;
     }
 }

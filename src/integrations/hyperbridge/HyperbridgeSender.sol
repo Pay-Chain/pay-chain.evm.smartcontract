@@ -9,6 +9,12 @@ import "../../vaults/PayChainVault.sol";
 import {IDispatcher, DispatchPost} from "@hyperbridge/core/interfaces/IDispatcher.sol";
 import {IHost} from "@hyperbridge/core/interfaces/IHost.sol";
 
+interface IUniswapV2Router02HB {
+    function WETH() external view returns (address);
+
+    function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+}
+
 /**
  * @title HyperbridgeSender
  * @notice Bridge Adapter for sending Hyperbridge ISMP messages
@@ -60,6 +66,8 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
     error DestinationNotSet(string chainId);
     error InvalidTimeout();
     error ZeroAddress();
+    error NativeFeeQuoteUnavailable();
+    error InsufficientNativeFee(uint256 required, uint256 provided);
 
     // ============ Constructor ============
 
@@ -107,10 +115,31 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
 
     // ============ IBridgeAdapter Implementation ============
 
-    /// @notice Quote the fee for sending a message via Hyperbridge
-    /// @param message The bridge message to quote
-    /// @return fee The estimated fee in native currency
+    /// @notice Quote the fee in native currency for sending a message via Hyperbridge
+    /// @dev Hyperbridge expects DispatchPost.fee in fee-token units. This method converts
+    ///      that fee-token requirement to native using the host configured swap router.
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
+        uint256 feeTokenAmount = _feeTokenAmount(message);
+        address uniswapRouter = IDispatcher(address(host)).uniswapV2Router();
+        if (uniswapRouter == address(0)) revert NativeFeeQuoteUnavailable();
+
+        address[] memory path = new address[](2);
+        path[0] = IUniswapV2Router02HB(uniswapRouter).WETH();
+        path[1] = IDispatcher(address(host)).feeToken();
+        uint256[] memory amountsIn = IUniswapV2Router02HB(uniswapRouter).getAmountsIn(feeTokenAmount, path);
+        if (amountsIn.length == 0) revert NativeFeeQuoteUnavailable();
+
+        // Add a small safety margin to reduce underfunded dispatches under fast price movement.
+        return (amountsIn[0] * 110) / 100; // +10%
+    }
+
+    /// @notice Return raw Hyperbridge fee-token amount (not native)
+    function quoteFeeTokenAmount(BridgeMessage calldata message) external view returns (uint256) {
+        return _feeTokenAmount(message);
+    }
+
+    /// @notice Quote token-denominated fee required by Hyperbridge dispatcher
+    function _feeTokenAmount(BridgeMessage calldata message) internal view returns (uint256 feeTokenAmount) {
         bytes memory smId = stateMachineIds[message.destChainId];
         if (smId.length == 0) revert StateMachineIdNotSet(message.destChainId);
 
@@ -123,9 +152,7 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
         // Calculate fee based on message size
         // Body + overhead for ISMP message structure
         uint256 messageSize = body.length + 256; // 256 bytes overhead estimate
-        fee = messageSize * perByteFee;
-        
-        return fee;
+        return messageSize * perByteFee;
     }
 
     /// @notice Send a cross-chain message via Hyperbridge ISMP
@@ -144,6 +171,9 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
 
         // Encode the payment instruction payload
         bytes memory body = _encodePayload(message);
+        uint256 feeTokenAmount = _feeTokenAmount(message);
+        uint256 nativeQuote = this.quoteFee(message);
+        if (msg.value < nativeQuote) revert InsufficientNativeFee(nativeQuote, msg.value);
 
         // Build DispatchPost request
         DispatchPost memory request = DispatchPost({
@@ -151,7 +181,7 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
             to: destContract,
             body: body,
             timeout: defaultTimeout,
-            fee: msg.value, // Relayer fee paid via msg.value
+            fee: feeTokenAmount, // Dispatcher fee in fee-token units
             payer: msg.sender
         });
 
@@ -176,6 +206,20 @@ contract HyperbridgeSender is IBridgeAdapter, Ownable {
     /// @return configured Whether the chain has both SM ID and destination set
     function isChainConfigured(string calldata chainId) external view returns (bool configured) {
         return stateMachineIds[chainId].length > 0 && destinationContracts[chainId].length > 0;
+    }
+
+    /// @notice IBridgeAdapter compatibility helper
+    function isRouteConfigured(string calldata chainId) external view override returns (bool configured) {
+        return stateMachineIds[chainId].length > 0 && destinationContracts[chainId].length > 0;
+    }
+
+    /// @notice Return route config diagnostics blobs
+    function getRouteConfig(
+        string calldata chainId
+    ) external view override returns (bool configured, bytes memory configA, bytes memory configB) {
+        bytes memory sm = stateMachineIds[chainId];
+        bytes memory dst = destinationContracts[chainId];
+        return (sm.length > 0 && dst.length > 0, sm, dst);
     }
 
     /// @notice Get the fee token used by Hyperbridge

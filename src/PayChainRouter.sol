@@ -14,7 +14,7 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
     // ============ State Variables ============
 
     /// @notice Mapping from destChainId (string) => bridgeType (uint8) => Adapter Address
-    /// @dev bridgeType: 0 = Hyperbridge (Default), 1 = CCIP
+    /// @dev bridgeType: 0 = Hyperbridge (Default), 1 = CCIP, 2 = LayerZero
     mapping(string => mapping(uint8 => address)) public adapters;
 
     // ============ Events ============
@@ -69,6 +69,17 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Check whether route exists and adapter-specific config is ready
+     */
+    function isRouteConfigured(string calldata destChainId, uint8 bridgeType) external view returns (bool) {
+        address adapter = adapters[destChainId][bridgeType];
+        if (adapter == address(0)) {
+            return false;
+        }
+        return IBridgeAdapter(adapter).isRouteConfigured(destChainId);
+    }
+
+    /**
      * @notice Estimate fee for a cross-chain payment
      * @param destChainId Destination chain ID
      * @param bridgeType Bridge type
@@ -84,6 +95,36 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
         if (adapter == address(0)) revert AdapterNotFound(destChainId, bridgeType);
         
         return IBridgeAdapter(adapter).quoteFee(message);
+    }
+
+    /**
+     * @notice Safely estimate fee for a cross-chain payment without reverting
+     * @dev Useful for backend/UI preflight diagnostics when an adapter route is half-configured.
+     * @return ok True if quote succeeded
+     * @return fee Estimated fee in native token (0 when !ok)
+     * @return reason Machine-friendly failure reason when !ok
+     */
+    function quotePaymentFeeSafe(
+        string calldata destChainId,
+        uint8 bridgeType,
+        IBridgeAdapter.BridgeMessage calldata message
+    ) external view returns (bool ok, uint256 fee, string memory reason) {
+        address adapter = adapters[destChainId][bridgeType];
+        if (adapter == address(0)) {
+            return (false, 0, "adapter_not_found");
+        }
+        if (!IBridgeAdapter(adapter).isRouteConfigured(destChainId)) {
+            return (false, 0, "route_not_configured");
+        }
+
+        (bool success, bytes memory data) =
+            adapter.staticcall(abi.encodeWithSelector(IBridgeAdapter.quoteFee.selector, message));
+        if (!success) {
+            return (false, 0, _decodeRevertReason(data));
+        }
+
+        fee = abi.decode(data, (uint256));
+        return (true, fee, "");
     }
 
     // ============ Core Logic ============
@@ -110,5 +151,29 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
         // msg.value is passed along for gas/fees
         // Safe: Loop restricted by nonReentrant modifier and trusted adapter registry
         return IBridgeAdapter(adapter).sendMessage{value: msg.value}(message);
+    }
+
+    function _decodeRevertReason(bytes memory revertData) internal pure returns (string memory) {
+        if (revertData.length == 0) {
+            return "execution_reverted";
+        }
+        if (revertData.length < 4) {
+            return "execution_reverted";
+        }
+        bytes4 selector;
+        assembly {
+            selector := mload(add(revertData, 32))
+        }
+
+        // Error(string)
+        if (selector == 0x08c379a0 && revertData.length >= 68) {
+            bytes memory revertSlice = new bytes(revertData.length - 4);
+            for (uint256 i = 4; i < revertData.length; i++) {
+                revertSlice[i - 4] = revertData[i];
+            }
+            return abi.decode(revertSlice, (string));
+        }
+
+        return "execution_reverted";
     }
 }

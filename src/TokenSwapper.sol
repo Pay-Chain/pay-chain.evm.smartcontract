@@ -111,10 +111,14 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     // ============ Modifiers ============
 
     modifier onlyAuthorized() {
+        _onlyAuthorized();
+        _;
+    }
+
+    function _onlyAuthorized() internal view {
         if (!authorizedCallers[msg.sender] && msg.sender != owner()) {
             revert Unauthorized();
         }
-        _;
     }
 
     // ============ Admin Functions ============
@@ -363,6 +367,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
 
         // Min Output
         uint256 minOut = _calculateMinOutput(amountIn, config.fee);
+        if (amountIn > type(uint128).max || minOut > type(uint128).max) revert SlippageExceeded();
 
         // Encode V4 Router Actions
         // Action: SWAP_EXACT_IN_SINGLE
@@ -372,7 +377,9 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         IV4Router.ExactInputSingleParams memory params = IV4Router.ExactInputSingleParams({
             poolKey: key,
             zeroForOne: zeroForOne,
+            // forge-lint: disable-next-line(unsafe-typecast)
             amountIn: uint128(amountIn),
+            // forge-lint: disable-next-line(unsafe-typecast)
             amountOutMinimum: uint128(minOut),
             hookData: new bytes(0)
         });
@@ -421,6 +428,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         }
 
         uint256 minOut = _calculateMinOutputMultiHop(path, amountIn);
+        if (amountIn > type(uint128).max || minOut > type(uint128).max) revert SlippageExceeded();
         
         IERC20(path[0]).forceApprove(universalRouter, amountIn);
         uint256 balanceBefore = IERC20(path[pathLength-1]).balanceOf(address(this));
@@ -428,7 +436,9 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         IV4Router.ExactInputParams memory params = IV4Router.ExactInputParams({
             currencyIn: Currency.wrap(path[0]),
             path: pathKeys,
+            // forge-lint: disable-next-line(unsafe-typecast)
             amountIn: uint128(amountIn),
+            // forge-lint: disable-next-line(unsafe-typecast)
             amountOutMinimum: uint128(minOut)
         });
 

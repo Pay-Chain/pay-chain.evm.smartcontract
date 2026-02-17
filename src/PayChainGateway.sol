@@ -14,6 +14,16 @@ import "./vaults/PayChainVault.sol";
 import "./PayChainRouter.sol";
 import "./TokenRegistry.sol";
 
+interface IVaultSwapper {
+    function swapFromVault(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        address recipient
+    ) external returns (uint256 amountOut);
+}
+
 /**
  * @title PayChainGateway
  * @notice Main Entry Point for PayChain Protocol
@@ -31,6 +41,12 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
 
     mapping(bytes32 => Payment) public payments;
     mapping(bytes32 => PaymentRequest) public paymentRequests;
+    mapping(bytes32 => IBridgeAdapter.BridgeMessage) public paymentMessages;
+    mapping(bytes32 => bytes32) public paymentToBridgeMessage;
+    mapping(bytes32 => bytes32) public bridgeMessageToPayment;
+    mapping(bytes32 => uint8) public paymentBridgeType;
+    mapping(bytes32 => uint8) public paymentRetryCount;
+    bool private _isRoutingMessage;
     
     /// @notice Default bridge type for a destination chain: destChainId => bridgeType
     mapping(string => uint8) public defaultBridgeTypes;
@@ -40,12 +56,15 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     uint256 public constant FIXED_BASE_FEE = 0.50e6; // $0.50 (assuming 6 decimals USDC/USDT)
     uint256 public constant FEE_RATE_BPS = 30; // 0.3%
     uint256 public constant REQUEST_EXPIRY_TIME = 15 minutes;
+    uint8 public constant MAX_RETRY_ATTEMPTS = 3;
 
     // ============ Events ============
     
     event VaultUpdated(address indexed oldVault, address indexed newVault);
     event RouterUpdated(address indexed oldRouter, address indexed newRouter);
     event DefaultBridgeTypeSet(string destChainId, uint8 bridgeType);
+    event PaymentRetryRequested(bytes32 indexed paymentId, bytes32 indexed previousMessageId, uint8 retryCount);
+    event MessageRoutingLockUpdated(bool locked);
 
     // ============ Constructor ============
 
@@ -139,14 +158,18 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         require(tokenRegistry.isTokenSupported(sourceToken), "Source token not supported");
 
         string memory destChainId = string(destChainIdBytes);
+        string memory sourceChainId = _getChainId();
+        bool isSameChain = keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId));
         
         // Validate receiver address
         address receiver = abi.decode(receiverBytes, (address));
         require(receiver != address(0), "Invalid receiver address");
-        
-        // Validate chain has adapter configured
-        uint8 bridgeType = defaultBridgeTypes[destChainId];
-        require(router.hasAdapter(destChainId, bridgeType), "No adapter for destination");
+
+        uint8 bridgeType = 255; // local-only marker for same-chain settlement
+        if (!isSameChain) {
+            bridgeType = defaultBridgeTypes[destChainId];
+            require(router.hasAdapter(destChainId, bridgeType), "No adapter for destination");
+        }
 
         // ========== Fee Calculation ==========
         uint256 platformFee = amount.calculatePlatformFee(FIXED_BASE_FEE, FEE_RATE_BPS);
@@ -170,15 +193,47 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         payments[paymentId] = Payment({
             sender: msg.sender,
             receiver: receiver,
-            sourceChainId: _getChainId(),
+            sourceChainId: sourceChainId,
             destChainId: destChainId,
             sourceToken: sourceToken,
             destToken: destToken,
             amount: amount,
             fee: platformFee,
-            status: PaymentStatus.Processing,
+            status: isSameChain ? PaymentStatus.Completed : PaymentStatus.Processing,
             createdAt: block.timestamp
         });
+
+        if (isSameChain) {
+            uint256 settledAmount = amount;
+            if (sourceToken == destToken) {
+                vault.pushTokens(sourceToken, receiver, amount);
+            } else {
+                require(destToken != address(0), "Invalid destination token");
+                require(tokenRegistry.isTokenSupported(destToken), "Destination token not supported");
+                require(address(swapper) != address(0), "Swapper not configured");
+                settledAmount = IVaultSwapper(address(swapper)).swapFromVault(
+                    sourceToken,
+                    destToken,
+                    amount,
+                    minAmountOut,
+                    receiver
+                );
+            }
+
+            emit PaymentCompleted(paymentId, settledAmount);
+            emit PaymentCreated(
+                paymentId,
+                msg.sender,
+                receiver,
+                destChainId,
+                sourceToken,
+                destToken,
+                amount,
+                platformFee,
+                "SameChain"
+            );
+            return paymentId;
+        }
 
         // ========== Route Payment ==========
         IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
@@ -191,11 +246,10 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             minAmountOut: minAmountOut
         });
 
-        // Delegate to Router (pass msg.value for bridge gas)
-        // Solves Wake "Unchecked return value" warning
-        bytes32 bridgeMessageId = router.routePayment{value: msg.value}(destChainId, bridgeType, message);
-        // Prevent "unused variable" warning (or use it if needed in future events)
-        bridgeMessageId;
+        paymentMessages[paymentId] = message;
+        paymentBridgeType[paymentId] = bridgeType;
+
+        _routeWithStoredMessage(paymentId, msg.value);
 
         emit PaymentCreated(
             paymentId,
@@ -206,8 +260,34 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             destToken,
             amount,
             platformFee,
-            bridgeType == 0 ? "Hyperbridge" : "CCIP"
+            bridgeType == 0 ? "Hyperbridge" : (bridgeType == 1 ? "CCIP" : "LayerZero")
         );
+    }
+
+    function _routeWithStoredMessage(bytes32 paymentId, uint256 nativeFeeValue) internal {
+        require(!_isRoutingMessage, "Routing reentrancy");
+        _isRoutingMessage = true;
+        emit MessageRoutingLockUpdated(true);
+
+        IBridgeAdapter.BridgeMessage storage message = paymentMessages[paymentId];
+        bytes32 bridgeMessageId;
+        try router.routePayment{value: nativeFeeValue}(message.destChainId, paymentBridgeType[paymentId], message) returns (
+            bytes32 routedMessageId
+        ) {
+            bridgeMessageId = routedMessageId;
+        } catch {
+            _isRoutingMessage = false;
+            emit MessageRoutingLockUpdated(false);
+            revert("Route payment failed");
+        }
+
+        require(bridgeMessageId != bytes32(0), "Invalid bridge message id");
+        paymentToBridgeMessage[paymentId] = bridgeMessageId;
+        bridgeMessageToPayment[bridgeMessageId] = paymentId;
+        emit PaymentExecuted(paymentId, bridgeMessageId);
+
+        _isRoutingMessage = false;
+        emit MessageRoutingLockUpdated(false);
     }
 
     // ============ Core: Payment Requests (Same Chain) ============
@@ -345,22 +425,45 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             j /= 10;
         }
         bytes memory bstr = new bytes(length);
+        bytes memory digits = "0123456789";
         uint256 k = length;
         j = _i;
         while (j != 0) {
-            bstr[--k] = bytes1(uint8(48 + j % 10));
+            bstr[--k] = digits[j % 10];
             j /= 10;
         }
         return string(bstr);
     }
 
     // Implement abstract functions from interface
-    function executePayment(bytes32 paymentId) external payable override {
-        // Logic for manual execution if needed
+    function executePayment(bytes32 paymentId) external payable override nonReentrant whenNotPaused {
+        Payment storage payment = payments[paymentId];
+        require(payment.sender != address(0), "Payment not found");
+        require(payment.sender == msg.sender || msg.sender == owner(), "Unauthorized");
+        require(
+            payment.status == PaymentStatus.Processing || payment.status == PaymentStatus.Failed,
+            "Invalid payment status"
+        );
+        require(bytes(paymentMessages[paymentId].destChainId).length > 0, "No bridge message");
+
+        payment.status = PaymentStatus.Processing;
+        _routeWithStoredMessage(paymentId, msg.value);
     }
     
-    function retryMessage(bytes32 messageId) external override {
-         // logic
+    function retryMessage(bytes32 messageId) external override nonReentrant whenNotPaused {
+        bytes32 paymentId = bridgeMessageToPayment[messageId];
+        require(paymentId != bytes32(0), "Message not found");
+
+        Payment storage payment = payments[paymentId];
+        require(payment.sender == msg.sender || msg.sender == owner(), "Unauthorized");
+        require(paymentRetryCount[paymentId] < MAX_RETRY_ATTEMPTS, "Retry limit reached");
+
+        paymentRetryCount[paymentId] += 1;
+        emit PaymentRetryRequested(paymentId, messageId, paymentRetryCount[paymentId]);
+
+        // Retry with the stored bridge payload. For bridge types requiring native fee,
+        // callers should use executePayment(paymentId) to provide msg.value.
+        _routeWithStoredMessage(paymentId, 0);
     }
 
     function processRefund(bytes32 paymentId) external override {

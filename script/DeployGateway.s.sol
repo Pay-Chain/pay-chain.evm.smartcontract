@@ -15,6 +15,7 @@ contract DeployGateway is DeployCommon {
         DeploymentConfig memory config = DeploymentConfig({
             ccipRouter: vm.envOr("CCIP_ROUTER_ADDRESS", address(0)),
             hyperbridgeHost: vm.envOr("HYPERBRIDGE_HOST_ADDRESS", address(0)),
+            layerZeroEndpointV2: vm.envOr("LAYERZERO_ENDPOINT_V2", address(0)),
             uniswapUniversalRouter: vm.envOr("UNISWAP_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("UNISWAP_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("BRIDGE_TOKEN", address(0)),

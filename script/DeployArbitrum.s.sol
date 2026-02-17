@@ -10,6 +10,7 @@ contract DeployArbitrum is DeployCommon {
         DeploymentConfig memory config = DeploymentConfig({
             ccipRouter: vm.envOr("ARBITRUM_CCIP_ROUTER", address(0)),
             hyperbridgeHost: vm.envOr("ARBITRUM_HYPERBRIDGE_HOST", address(0)),
+            layerZeroEndpointV2: vm.envOr("ARBITRUM_LAYERZERO_ENDPOINT_V2", address(0)),
             uniswapUniversalRouter: vm.envOr("ARBITRUM_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("ARBITRUM_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("ARBITRUM_USDC", address(0)), 
@@ -35,10 +36,10 @@ contract DeployArbitrum is DeployCommon {
             console.log("Registered ARBITRUM_USDT:", usdt);
         }
 
-        address usd0 = vm.envOr("ARBITRUM_USD\u20ae0", address(0)); // USD0 - checking simple string first
+        address usd0 = vm.envOr("ARBITRUM_USDTO", address(0));
         if (usd0 != address(0)) {
              registry.setTokenSupport(usd0, true);
-             console.log("Registered ARBITRUM_USD0:", usd0);
+             console.log("Registered ARBITRUM_USDTO:", usd0);
         }
 
         address weth = vm.envOr("ARBITRUM_WETH", address(0));

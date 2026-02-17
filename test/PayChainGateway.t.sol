@@ -8,14 +8,40 @@ import "../src/PayChainRouter.sol";
 import "../src/vaults/PayChainVault.sol";
 import "../src/integrations/ccip/CCIPSender.sol";
 import "../src/integrations/ccip/CCIPReceiver.sol";
-import "../src/ccip/Client.sol";
+import "../src/integrations/ccip/Client.sol";
 import "../src/TokenRegistry.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 // Mock Token
 contract MockERC20 is ERC20 {
     constructor() ERC20("Mock", "MCK") {
         _mint(msg.sender, 1000000 * 10**18);
+    }
+}
+
+contract MockVaultSwapper {
+    using SafeERC20 for IERC20;
+
+    PayChainVault public immutable vault;
+
+    constructor(address _vault) {
+        vault = PayChainVault(_vault);
+    }
+
+    function swapFromVault(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        address recipient
+    ) external returns (uint256 amountOut) {
+        // Pull source liquidity from vault to simulate swap consumption.
+        vault.pushTokens(tokenIn, address(this), amountIn);
+
+        amountOut = amountIn;
+        require(amountOut >= minAmountOut, "Mock slippage");
+        IERC20(tokenOut).safeTransfer(recipient, amountOut);
     }
 }
 
@@ -47,6 +73,7 @@ contract PayChainGatewayTest is Test {
 
     address user = address(1);
     address merchant = address(2);
+    address stranger = address(3);
     
     // Test Chain Config
     string constant DEST_CHAIN = "EVM-56"; // BSC
@@ -92,7 +119,8 @@ contract PayChainGatewayTest is Test {
         // tokenRegistry.setToken(DEST_CHAIN, address(token), "MCK"); // Not needed for current registry implementation
         
         // Router: Register Adapters (Wake: False positive reentrancy warning - Safe, no external calls)
-        router.registerAdapter(DEST_CHAIN, 0, address(ccipSender)); // 0 = CCIP
+        router.registerAdapter(DEST_CHAIN, 1, address(ccipSender)); // 1 = CCIP
+        gateway.setDefaultBridgeType(DEST_CHAIN, 1);
         
         // Gateway: Whitelist Token - Already handled by TokenRegistry
         // gateway.setTokenSupport(address(token), true);
@@ -107,7 +135,7 @@ contract PayChainGatewayTest is Test {
         ccipSender.setDestinationAdapter(DEST_CHAIN, abi.encode(address(ccipReceiver))); // Should be receiver on dest, but for logic check ok.
         
         // Fund User
-        token.transfer(user, 1000 * 10**18);
+        require(token.transfer(user, 1000 * 10**18), "fund user failed");
         
         vm.stopPrank();
     }
@@ -187,13 +215,37 @@ contract PayChainGatewayTest is Test {
         
         vm.stopPrank();
     }
+
+    function testCreatePaymentSameChainWithoutBridge() public {
+        vm.startPrank(user);
+
+        token.approve(address(vault), 101 * 10**18);
+
+        string memory sameChain = string.concat("eip155:", vm.toString(block.chainid));
+        bytes32 pid = gateway.createPayment(
+            bytes(sameChain),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+
+        assertTrue(pid != bytes32(0));
+        assertEq(token.balanceOf(merchant), 100 * 10**18);
+        assertEq(token.balanceOf(address(vault)), 0);
+
+        (,,,,,,,, IPayChainGateway.PaymentStatus status,) = gateway.payments(pid);
+        assertEq(uint256(status), uint256(IPayChainGateway.PaymentStatus.Completed));
+
+        vm.stopPrank();
+    }
     
     function testReceivePayment() public {
         // Test CCIP Receiver Adapter Flow
         
         // 1. Fund the Adapter (simulating CCIP Router delivering tokens)
         vm.startPrank(msg.sender);
-        token.transfer(address(ccipReceiver), 50 * 10**18);
+        require(token.transfer(address(ccipReceiver), 50 * 10**18), "fund ccip receiver failed");
         vm.stopPrank();
         
         // 2. Prepare CCIP Message
@@ -221,6 +273,270 @@ contract PayChainGatewayTest is Test {
         // Check merchant received funds
         assertEq(token.balanceOf(merchant), 50 * 10**18);
         
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentRevertNoAdapterForDestination() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        vm.expectRevert(bytes("No adapter for destination"));
+        gateway.createPayment(
+            bytes("eip155:42161"),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentRevertEmptyDestChain() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        vm.expectRevert(bytes("Empty dest chain ID"));
+        gateway.createPayment(
+            bytes(""),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentRevertEmptyReceiverBytes() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        vm.expectRevert(bytes("Empty receiver"));
+        gateway.createPayment(
+            bytes(DEST_CHAIN),
+            bytes(""),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentRevertUnsupportedSourceToken() public {
+        MockERC20 unsupported = new MockERC20();
+        vm.startPrank(user);
+        unsupported.approve(address(vault), 101 * 10**18);
+
+        vm.expectRevert(bytes("Source token not supported"));
+        gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(unsupported),
+            address(unsupported),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentRevertMalformedReceiverBytes() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        // abi.decode(bytes,address) should revert for malformed payload length
+        vm.expectRevert();
+        gateway.createPayment(
+            bytes(DEST_CHAIN),
+            hex"01",
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentSameChainDifferentTokenRevertIfSwapperMissing() public {
+        vm.startPrank(msg.sender);
+        MockERC20 tokenB = new MockERC20();
+        tokenRegistry.setTokenSupport(address(tokenB), true);
+        require(tokenB.transfer(user, 1000 * 10**18), "fund user tokenB failed");
+        gateway.setSwapper(address(0));
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+        string memory sameChain = string.concat("eip155:", vm.toString(block.chainid));
+
+        vm.expectRevert(bytes("Swapper not configured"));
+        gateway.createPayment(
+            bytes(sameChain),
+            abi.encode(merchant),
+            address(token),
+            address(tokenB),
+            100 * 10**18
+        );
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentSameChainDifferentTokenSwapSuccess() public {
+        MockERC20 tokenB = new MockERC20();
+        MockVaultSwapper mockSwapper = new MockVaultSwapper(address(vault));
+
+        vm.startPrank(tokenRegistry.owner());
+        tokenRegistry.setTokenSupport(address(tokenB), true);
+        vm.stopPrank();
+        deal(address(tokenB), address(mockSwapper), 1000 * 10**18);
+
+        vm.startPrank(gateway.owner());
+        gateway.setSwapper(address(mockSwapper));
+        vm.stopPrank();
+
+        vm.startPrank(vault.owner());
+        vault.setAuthorizedSpender(address(mockSwapper), true);
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+        string memory sameChain = string.concat("eip155:", vm.toString(block.chainid));
+
+        bytes32 pid = gateway.createPaymentWithSlippage(
+            bytes(sameChain),
+            abi.encode(merchant),
+            address(token),
+            address(tokenB),
+            100 * 10**18,
+            100 * 10**18
+        );
+
+        assertTrue(pid != bytes32(0));
+        assertEq(tokenB.balanceOf(merchant), 100 * 10**18);
+        (,,,,,,,, IPayChainGateway.PaymentStatus status,) = gateway.payments(pid);
+        assertEq(uint256(status), uint256(IPayChainGateway.PaymentStatus.Completed));
+        vm.stopPrank();
+    }
+
+    function testExecutePaymentRerouteUpdatesMessageMapping() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        bytes32 pid = gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        bytes32 firstMessageId = gateway.paymentToBridgeMessage(pid);
+        assertTrue(firstMessageId != bytes32(0));
+        assertEq(gateway.bridgeMessageToPayment(firstMessageId), pid);
+        vm.stopPrank();
+
+        // Replenish vault liquidity for manual re-execution in this mocked setup.
+        vm.prank(user);
+        require(token.transfer(address(vault), 100 * 10**18), "replenish vault execute failed");
+
+        vm.startPrank(user);
+        vm.warp(block.timestamp + 1);
+        gateway.executePayment(pid);
+
+        bytes32 secondMessageId = gateway.paymentToBridgeMessage(pid);
+        assertTrue(secondMessageId != bytes32(0));
+        assertEq(gateway.bridgeMessageToPayment(secondMessageId), pid);
+        vm.stopPrank();
+    }
+
+    function testRetryMessageIncrementsCounterAndReRoutes() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        bytes32 pid = gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        bytes32 firstMessageId = gateway.paymentToBridgeMessage(pid);
+        vm.stopPrank();
+
+        vm.prank(user);
+        require(token.transfer(address(vault), 100 * 10**18), "replenish vault retry failed");
+
+        vm.startPrank(user);
+        vm.warp(block.timestamp + 1);
+        gateway.retryMessage(firstMessageId);
+        assertEq(gateway.paymentRetryCount(pid), 1);
+        assertEq(gateway.bridgeMessageToPayment(gateway.paymentToBridgeMessage(pid)), pid);
+        vm.stopPrank();
+    }
+
+    function testRetryMessageRevertUnauthorized() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+        bytes32 pid = gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        bytes32 messageId = gateway.paymentToBridgeMessage(pid);
+        vm.stopPrank();
+
+        vm.startPrank(stranger);
+        vm.expectRevert(bytes("Unauthorized"));
+        gateway.retryMessage(messageId);
+        vm.stopPrank();
+    }
+
+    function testRetryMessageRevertMessageNotFound() public {
+        vm.startPrank(user);
+        vm.expectRevert(bytes("Message not found"));
+        gateway.retryMessage(keccak256("unknown-message"));
+        vm.stopPrank();
+    }
+
+    function testExecutePaymentRevertInvalidStatusForSameChainPayment() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        string memory sameChain = string.concat("eip155:", vm.toString(block.chainid));
+        bytes32 pid = gateway.createPayment(
+            bytes(sameChain),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+
+        vm.expectRevert(bytes("Invalid payment status"));
+        gateway.executePayment(pid);
+        vm.stopPrank();
+    }
+
+    function testRetryMessageRevertAfterMaxAttempts() public {
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+        bytes32 pid = gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+
+        vm.prank(user);
+        require(token.transfer(address(vault), 300 * 10**18), "replenish vault max retry failed");
+
+        vm.startPrank(user);
+        for (uint256 i = 0; i < 3; i++) {
+            bytes32 currentMessageId = gateway.paymentToBridgeMessage(pid);
+            vm.warp(block.timestamp + 1);
+            gateway.retryMessage(currentMessageId);
+        }
+
+        bytes32 lastMessageId = gateway.paymentToBridgeMessage(pid);
+        vm.expectRevert(bytes("Retry limit reached"));
+        gateway.retryMessage(lastMessageId);
         vm.stopPrank();
     }
 }

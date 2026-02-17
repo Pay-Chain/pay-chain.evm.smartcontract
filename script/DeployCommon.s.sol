@@ -11,11 +11,14 @@ import "../src/integrations/ccip/CCIPSender.sol";
 import "../src/integrations/ccip/CCIPReceiver.sol";
 import "../src/integrations/hyperbridge/HyperbridgeSender.sol";
 import "../src/integrations/hyperbridge/HyperbridgeReceiver.sol";
+import "../src/integrations/layerzero/LayerZeroSenderAdapter.sol";
+import "../src/integrations/layerzero/LayerZeroReceiverAdapter.sol";
 
 abstract contract DeployCommon is Script {
     struct DeploymentConfig {
         address ccipRouter;
         address hyperbridgeHost;
+        address layerZeroEndpointV2;
         address uniswapUniversalRouter;
         address uniswapPoolManager;
         address bridgeToken;
@@ -43,7 +46,8 @@ abstract contract DeployCommon is Script {
         PayChainVault vault = new PayChainVault();
         console.log("PayChainVault deployed at:", address(vault));
 
-        PayChainRouter router_ = new PayChainRouter();
+        PayChainRouter routerInstance = new PayChainRouter();
+        router_ = routerInstance;
         console.log("PayChainRouter deployed at:", address(router_));
 
         // 2. Deploy Gateway
@@ -90,6 +94,21 @@ abstract contract DeployCommon is Script {
             
             vault.setAuthorizedSpender(address(hyperbridgeSender), true);
             vault.setAuthorizedSpender(address(hyperbridgeReceiver), true);
+        }
+
+        if (config.layerZeroEndpointV2 != address(0)) {
+            LayerZeroSenderAdapter lzSender = new LayerZeroSenderAdapter(config.layerZeroEndpointV2);
+            console.log("LayerZeroSenderAdapter deployed at:", address(lzSender));
+
+            LayerZeroReceiverAdapter lzReceiver = new LayerZeroReceiverAdapter(
+                config.layerZeroEndpointV2,
+                address(gateway_),
+                address(vault)
+            );
+            console.log("LayerZeroReceiverAdapter deployed at:", address(lzReceiver));
+
+            vault.setAuthorizedSpender(address(lzSender), true);
+            vault.setAuthorizedSpender(address(lzReceiver), true);
         }
 
         // 6. Configure Authorizations

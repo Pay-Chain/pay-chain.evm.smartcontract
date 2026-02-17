@@ -32,6 +32,23 @@ interface IBridgeAdapter {
      * @return fee The estimated fee in native token
      */
     function quoteFee(BridgeMessage calldata message) external view returns (uint256 fee);
+
+    /**
+     * @notice Check whether a destination route has required bridge-specific config
+     * @param destChainId Destination chain ID (CAIP-2)
+     */
+    function isRouteConfigured(string calldata destChainId) external view returns (bool);
+
+    /**
+     * @notice Return bridge-specific config blobs for diagnostics tooling
+     * @param destChainId Destination chain ID (CAIP-2)
+     * @return configured Whether destination route is configured
+     * @return configA Primary config blob (bridge-specific)
+     * @return configB Secondary config blob (bridge-specific)
+     */
+    function getRouteConfig(
+        string calldata destChainId
+    ) external view returns (bool configured, bytes memory configA, bytes memory configB);
     
     // ============ Receiver Functions ============
     

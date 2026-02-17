@@ -1,48 +1,119 @@
 -include .env
 
-.PHONY: all test clean deploy-base deploy-bsc deploy-arbitrum
+.DEFAULT_GOAL := help
 
-all: clean remove install update build
+.PHONY: help env-check build test clean \
+	deploy-base-dry deploy-bsc-dry deploy-arbitrum-dry \
+	deploy-base deploy-bsc deploy-arbitrum \
+	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify
 
-# Clean the repo
-clean :; forge clean
+VERBOSITY ?= -vvvv
+SLOW ?= --slow
 
-# Remove modules
-remove :; rm -rf .gitmodules && rm -rf .git/modules/* && rm -rf lib && touch .gitmodules && git add . && git commit -m "modules"
+help:
+	@echo "Pay-Chain EVM deploy commands"
+	@echo ""
+	@echo "Core:"
+	@echo "  make env-check             - check required env vars"
+	@echo "  make build                 - forge build"
+	@echo "  make test                  - forge test --offline"
+	@echo ""
+	@echo "Dry run (no broadcast):"
+	@echo "  make deploy-base-dry"
+	@echo "  make deploy-bsc-dry"
+	@echo "  make deploy-arbitrum-dry"
+	@echo ""
+	@echo "Broadcast deploy:"
+	@echo "  make deploy-base"
+	@echo "  make deploy-bsc"
+	@echo "  make deploy-arbitrum"
+	@echo ""
+	@echo "Broadcast + verify:"
+	@echo "  make deploy-base-verify"
+	@echo "  make deploy-bsc-verify"
+	@echo "  make deploy-arbitrum-verify"
 
-# Install the Modules
-install :; forge install cyfrin/foundry-devops@0.0.11 --no-commit && forge install smartcontractkit/chainlink-brownie-contracts@0.6.1 --no-commit && forge install foundry-rs/forge-std@v1.5.3 --no-commit
+env-check:
+	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
+	@test -n "$(FEE_RECIPIENT_ADDRESS)" || (echo "Missing FEE_RECIPIENT_ADDRESS" && exit 1)
+	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
+	@test -n "$(BSC_RPC_URL)" || (echo "Missing BSC_RPC_URL" && exit 1)
+	@test -n "$(ARBITRUM_RPC_URL)" || (echo "Missing ARBITRUM_RPC_URL" && exit 1)
 
-# Update Dependencies
-update:; forge update
+build:
+	@forge build
 
-# Build
-build:; forge build
+test:
+	@forge test --offline
 
-# Test
-test :; forge test 
+clean:
+	@forge clean
 
-# Snapshot
-snapshot :; forge snapshot
+deploy-base-dry: env-check
+	@forge script script/DeployBase.s.sol:DeployBase \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
 
-# Format
-format :; forge fmt
+deploy-bsc-dry: env-check
+	@forge script script/DeployBSC.s.sol:DeployBSC \
+		--rpc-url $(BSC_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
 
-# Anvil
-anvil :; anvil -m 'test test test test test test test test test test test junk' --steps-tracing --block-time 1
+deploy-arbitrum-dry: env-check
+	@forge script script/DeployArbitrum.s.sol:DeployArbitrum \
+		--rpc-url $(ARBITRUM_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
 
-# Deploy to Base
-deploy-base:
-	@forge script script/DeployBase.s.sol:DeployBase --rpc-url $(BASE_RPC_URL) --private-key $(PRIVATE_KEY) --broadcast --verify --etherscan-api-key $(BASESCAN_API_KEY) -vvvv --slow
+deploy-base: env-check
+	@forge script script/DeployBase.s.sol:DeployBase \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		$(VERBOSITY) $(SLOW)
 
-# Deploy to BSC
-deploy-bsc:
-	@forge script script/DeployBSC.s.sol:DeployBSC --rpc-url $(BSC_RPC_URL) --private-key $(PRIVATE_KEY) --broadcast --verify --etherscan-api-key $(BSCSCAN_API_KEY) -vvvv
+deploy-bsc: env-check
+	@forge script script/DeployBSC.s.sol:DeployBSC \
+		--rpc-url $(BSC_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		$(VERBOSITY) $(SLOW)
 
-# Deploy to Arbitrum
-deploy-arbitrum:
-	@forge script script/DeployArbitrum.s.sol:DeployArbitrum --rpc-url $(ARBITRUM_RPC_URL) --private-key $(PRIVATE_KEY) --broadcast --verify --etherscan-api-key $(ARBISCAN_API_KEY) -vvvv --slow
+deploy-arbitrum: env-check
+	@forge script script/DeployArbitrum.s.sol:DeployArbitrum \
+		--rpc-url $(ARBITRUM_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		$(VERBOSITY) $(SLOW)
 
-# Deploy Gateway (Common)
-deploy-gateway:
-	@forge script script/DeployGateway.s.sol:DeployGateway --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast -vvvv
+deploy-base-verify: env-check
+	@test -n "$(BASESCAN_API_KEY)" || (echo "Missing BASESCAN_API_KEY" && exit 1)
+	@forge script script/DeployBase.s.sol:DeployBase \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(BASESCAN_API_KEY) \
+		$(VERBOSITY) $(SLOW)
+
+deploy-bsc-verify: env-check
+	@test -n "$(BSCSCAN_API_KEY)" || (echo "Missing BSCSCAN_API_KEY" && exit 1)
+	@forge script script/DeployBSC.s.sol:DeployBSC \
+		--rpc-url $(BSC_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(BSCSCAN_API_KEY) \
+		$(VERBOSITY) $(SLOW)
+
+deploy-arbitrum-verify: env-check
+	@test -n "$(ARBISCAN_API_KEY)" || (echo "Missing ARBISCAN_API_KEY" && exit 1)
+	@forge script script/DeployArbitrum.s.sol:DeployArbitrum \
+		--rpc-url $(ARBITRUM_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(ARBISCAN_API_KEY) \
+		$(VERBOSITY) $(SLOW)

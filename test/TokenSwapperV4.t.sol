@@ -27,7 +27,7 @@ contract MockUniversalRouter {
         rates[tokenIn][tokenOut] = rate;
     }
 
-    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable {
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256) external payable {
         // 0x10 = V4_SWAP
         if (commands[0] == 0x10) {
             (bytes memory actions, bytes[] memory actionParams) = abi.decode(inputs[0], (bytes, bytes[]));
@@ -52,7 +52,7 @@ contract MockUniversalRouter {
         uint256 amountOut = (amountIn * rate) / 1e18;
         
         // Router Logic: Pull In, Push Out
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        require(IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn), "MockRouter transferFrom failed");
         IMintable(tokenOut).blockTransfer(msg.sender, amountOut); // Mock mint or transfer
     }
 
@@ -67,7 +67,10 @@ contract MockUniversalRouter {
 
         uint256 amountOut = (params.amountIn * rate) / 1e18;
         
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), params.amountIn);
+        require(
+            IERC20(tokenIn).transferFrom(msg.sender, address(this), params.amountIn),
+            "MockRouter mh transferFrom failed"
+        );
         IMintable(tokenOut).blockTransfer(msg.sender, amountOut);
     }
 }
@@ -119,7 +122,7 @@ contract TokenSwapperV4Test is Test {
             address(tokenA) < address(tokenB) ? address(tokenB) : address(tokenA)
         ));
         
-        (uint24 fee, int24 ts, address h, bool active) = swapper.directPools(key);
+        (uint24 fee, , , bool active) = swapper.directPools(key);
         assertEq(fee, 3000);
         assertTrue(active);
     }
