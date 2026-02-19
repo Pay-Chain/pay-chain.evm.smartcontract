@@ -30,6 +30,8 @@ interface ILayerZeroEndpointV2 {
         MessagingParams calldata _params,
         address _refundAddress
     ) external payable returns (MessagingReceipt memory);
+
+    function setDelegate(address _delegate) external;
 }
 
 /**
@@ -43,6 +45,9 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     mapping(string => uint32) public dstEids;
     mapping(string => bytes32) public peers;
     mapping(string => bytes) public enforcedOptions;
+
+    /// @notice Default gas limit for LZ receive execution
+    uint128 public constant DEFAULT_LZ_GAS = 200_000;
 
     event LayerZeroRouteSet(string indexed destChainId, uint32 dstEid, bytes32 peer);
     event LayerZeroOptionsSet(string indexed destChainId, bytes options);
@@ -72,6 +77,11 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     function setEnforcedOptions(string calldata destChainId, bytes calldata options) external onlyOwner {
         enforcedOptions[destChainId] = options;
         emit LayerZeroOptionsSet(destChainId, options);
+    }
+
+    /// @notice Register this contract as delegate on the LZ endpoint
+    function registerDelegate() external onlyOwner {
+        endpoint.setDelegate(owner());
     }
 
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
@@ -114,9 +124,13 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
             message.amount,
             message.destToken,
             message.receiver,
-            message.minAmountOut
+            message.minAmountOut,
+            message.sourceToken
         );
         bytes memory options = enforcedOptions[message.destChainId];
+        if (options.length == 0) {
+            options = _buildDefaultOptions();
+        }
         params = ILayerZeroEndpointV2.MessagingParams({
             dstEid: dstEid,
             receiver: peer,
@@ -128,5 +142,17 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
         ILayerZeroEndpointV2.MessagingFee memory q = endpoint.quote(params, address(this));
         quotedFee = q.nativeFee;
     }
-}
 
+    /// @notice Build default LZ options with gas limit for lzReceive
+    function _buildDefaultOptions() internal pure returns (bytes memory) {
+        // Type 3 options format: 0x0003 + executor option
+        // Executor lzReceive option: type=1, gas=DEFAULT_LZ_GAS, value=0
+        return abi.encodePacked(
+            uint16(3),           // Options type 3
+            uint8(1),            // Worker ID: executor
+            uint16(17),          // Option length: 1 + 16 = 17 bytes
+            uint8(1),            // Option type: lzReceive
+            DEFAULT_LZ_GAS       // Gas limit (uint128)
+        );
+    }
+}

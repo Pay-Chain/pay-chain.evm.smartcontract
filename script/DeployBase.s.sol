@@ -14,7 +14,8 @@ contract DeployBase is DeployCommon {
             uniswapUniversalRouter: vm.envOr("BASE_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("BASE_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("BASE_USDC", address(0)), // Default bridge token
-            feeRecipient: feeRecipient
+            feeRecipient: feeRecipient,
+            enableSourceSideSwap: vm.envOr("BASE_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to Base...");

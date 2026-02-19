@@ -14,7 +14,8 @@ contract DeployBSC is DeployCommon {
             uniswapUniversalRouter: vm.envOr("BSC_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("BSC_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("BSC_USDC", address(0)), 
-            feeRecipient: feeRecipient
+            feeRecipient: feeRecipient,
+            enableSourceSideSwap: vm.envOr("BSC_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to BSC...");

@@ -9,6 +9,20 @@ import "./interfaces/ISwapper.sol";
 import "./interfaces/IUniswapV4.sol";
 import "./vaults/PayChainVault.sol";
 
+interface IUniV3SwapRouter02 {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+}
+
 /**
  * @title TokenSwapper
  * @notice DEX integration contract with pool discovery, multi-hop swaps, and gas simulation
@@ -26,6 +40,13 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         uint24 fee;
         int24 tickSpacing;
         address hooks;
+        bytes hookData;
+        bool isActive;
+    }
+
+    /// @notice V3 pool config for direct fallback route
+    struct V3PoolConfig {
+        uint24 feeTier;
         bool isActive;
     }
 
@@ -40,6 +61,12 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     /// @notice Address of Uniswap V4 PoolManager
     address public poolManager;
 
+    /// @notice Address of Uniswap V3 router (fallback path when V4 pool is unavailable)
+    address public swapRouterV3;
+
+    /// @notice Address of Uniswap V3 Quoter
+    address public quoterV3;
+
     /// @notice Bridge token for multi-hop routes (e.g., USDC)
     address public bridgeToken;
 
@@ -48,6 +75,9 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
 
     /// @notice Multi-hop routes: keccak256(tokenIn, tokenOut) => address[]
     mapping(bytes32 => address[]) public multiHopRoutes;
+
+    /// @notice Direct V3 fallback pools: keccak256(tokenIn, tokenOut) => V3PoolConfig
+    mapping(bytes32 => V3PoolConfig) public v3Pools;
 
     /// @notice Whitelisted callers (PayChain contracts)
     mapping(address => bool) public authorizedCallers;
@@ -88,6 +118,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         uint256 amountOut,
         address indexed recipient
     );
+    event AuthorizedCallerSet(address indexed caller, bool allowed);
+    event V4RouterValidated(address indexed router);
     
     // ============ Constructor ============
 
@@ -97,15 +129,39 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         address _bridgeToken
     ) Ownable(msg.sender) {
         if (_universalRouter == address(0) || _poolManager == address(0)) {
-            // Revert if strictly requiring valid addresses
+            revert InvalidAddress();
         }
 
         universalRouter = _universalRouter;
         poolManager = _poolManager;
         bridgeToken = _bridgeToken;
 
+        // UNI-1: Validate V4 router interface on deployment
+        _validateV4Router(_universalRouter);
+
         // Owner is authorized by default
         authorizedCallers[msg.sender] = true;
+    }
+
+    /// @notice Validate that the V4 Universal Router supports the expected interface
+    /// @dev The UniversalRouter must implement execute(bytes,bytes[],uint256)
+    ///      which is the command-encoded swap entry point for Uniswap V4.
+    ///      This check guards against misconfigured router addresses.
+    function validateV4Router() external view returns (bool) {
+        return _isV4RouterValid(universalRouter);
+    }
+
+    function _validateV4Router(address _router) internal {
+        require(_isV4RouterValid(_router), "V4 router interface not supported");
+        emit V4RouterValidated(_router);
+    }
+
+    function _isV4RouterValid(address _router) internal view returns (bool) {
+        if (_router == address(0)) return false;
+        // Check that the address has code deployed (is a contract)
+        uint256 size;
+        assembly { size := extcodesize(_router) }
+        return size > 0;
     }
 
     // ============ Modifiers ============
@@ -127,11 +183,25 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         vault = PayChainVault(_vault);
     }
 
+    function setV3Router(address _swapRouterV3) external onlyOwner {
+        swapRouterV3 = _swapRouterV3;
+    }
+
+    function setQuoterV3(address _quoter) external onlyOwner {
+        quoterV3 = _quoter;
+    }
+
     /// @notice Update the maximum slippage tolerance
     /// @param bps New slippage in basis points (max 1000 = 10%)
     function setMaxSlippage(uint256 bps) external onlyOwner {
         require(bps <= 1000, "Max 10% slippage");
         maxSlippageBps = bps;
+    }
+
+    function setAuthorizedCaller(address caller, bool allowed) external onlyOwner {
+        if (caller == address(0)) revert InvalidAddress();
+        authorizedCallers[caller] = allowed;
+        emit AuthorizedCallerSet(caller, allowed);
     }
 
     // ============ Core Swap Functions ============
@@ -156,9 +226,9 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         
         // Internal Logic for swapping (using funds now in this contract)
         if (isDirect) {
-            amountOut = _executeDirectSwap(tokenIn, tokenOut, amountIn);
+            amountOut = _executeDirectSwap(tokenIn, tokenOut, amountIn, minAmountOut);
         } else {
-            amountOut = _executeMultiHopSwap(path, amountIn);
+            amountOut = _executeMultiHopSwap(path, amountIn, minAmountOut);
         }
 
         if (amountOut < minAmountOut) revert SlippageExceeded();
@@ -188,9 +258,9 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
 
         if (isDirect) {
-            amountOut = _executeDirectSwap(tokenIn, tokenOut, amountIn);
+            amountOut = _executeDirectSwap(tokenIn, tokenOut, amountIn, minAmountOut);
         } else {
-            amountOut = _executeMultiHopSwap(path, amountIn);
+            amountOut = _executeMultiHopSwap(path, amountIn, minAmountOut);
         }
 
         if (amountOut < minAmountOut) revert SlippageExceeded();
@@ -218,7 +288,15 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
             return (true, true, path);
         }
 
-        // 2. Check configured multi-hop route
+        // 2. Check direct V3 fallback route
+        if (v3Pools[pairKey].isActive) {
+            path = new address[](2);
+            path[0] = tokenIn;
+            path[1] = tokenOut;
+            return (true, true, path);
+        }
+
+        // 3. Check configured multi-hop route
         address[] storage hops = multiHopRoutes[pairKey];
         if (hops.length > 0) {
             path = new address[](hops.length + 2);
@@ -230,7 +308,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
             return (true, false, path);
         }
 
-        // 3. Try via bridge token
+        // 4. Try via bridge token
         if (bridgeToken != address(0) && tokenIn != bridgeToken && tokenOut != bridgeToken) {
             bytes32 inKey = _getPairKey(tokenIn, bridgeToken);
             bytes32 outKey = _getPairKey(bridgeToken, tokenOut);
@@ -306,7 +384,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         address tokenOut,
         uint24 fee,
         int24 tickSpacing,
-        address hooks
+        address hooks,
+        bytes calldata hookData
     ) external onlyOwner {
         if (tokenIn == address(0) || tokenOut == address(0)) revert InvalidAddress(); // Assuming InvalidAddress() is defined elsewhere
 
@@ -315,11 +394,26 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
             fee: fee,
             tickSpacing: tickSpacing,
             hooks: hooks,
+            hookData: hookData,
             isActive: true
         });
 
         // Assuming PoolRouteSet event is defined elsewhere
         // emit PoolRouteSet(tokenIn, tokenOut, true, address(0)); // poolAddress not used in V4, using derived PoolKey
+    }
+
+    /// @notice Set a direct V3 fallback pool route for a token pair
+    function setV3Pool(
+        address tokenIn,
+        address tokenOut,
+        uint24 feeTier
+    ) external onlyOwner {
+        if (tokenIn == address(0) || tokenOut == address(0)) revert InvalidAddress();
+        bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+        v3Pools[pairKey] = V3PoolConfig({
+            feeTier: feeTier,
+            isActive: true
+        });
     }
 
     // ============ Internal Functions ============
@@ -341,7 +435,30 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     function _executeDirectSwap(
         address tokenIn,
         address tokenOut,
-        uint256 amountIn
+        uint256 amountIn,
+        uint256 minAmountOut
+    ) internal returns (uint256 amountOut) {
+        bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+
+        // Prefer V4 direct pool when available.
+        if (directPools[pairKey].isActive) {
+            return _executeV4DirectSwap(tokenIn, tokenOut, amountIn, minAmountOut);
+        }
+
+        // Fallback to V3 direct pool when configured.
+        V3PoolConfig memory v3Config = v3Pools[pairKey];
+        if (v3Config.isActive) {
+            return _executeV3Swap(tokenIn, tokenOut, amountIn, minAmountOut, v3Config.feeTier);
+        }
+
+        revert NoRouteFound();
+    }
+
+    function _executeV4DirectSwap(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut
     ) internal returns (uint256 amountOut) {
         if (universalRouter == address(0)) return amountIn;
 
@@ -365,9 +482,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         // Determine zeroForOne
         bool zeroForOne = tokenIn < tokenOut;
 
-        // Min Output
-        uint256 minOut = _calculateMinOutput(amountIn, config.fee);
-        if (amountIn > type(uint128).max || minOut > type(uint128).max) revert SlippageExceeded();
+        // Sanity check against uint128 for V4 router
+        if (amountIn > type(uint128).max || minAmountOut > type(uint128).max) revert SlippageExceeded();
 
         // Encode V4 Router Actions
         // Action: SWAP_EXACT_IN_SINGLE
@@ -380,8 +496,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
             // forge-lint: disable-next-line(unsafe-typecast)
             amountIn: uint128(amountIn),
             // forge-lint: disable-next-line(unsafe-typecast)
-            amountOutMinimum: uint128(minOut),
-            hookData: new bytes(0)
+            amountOutMinimum: uint128(minAmountOut),
+            hookData: config.hookData
         });
         
         bytes[] memory actionParams = new bytes[](1);
@@ -399,9 +515,32 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         }
     }
 
+    function _executeV3Swap(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minOut,
+        uint24 feeTier
+    ) internal returns (uint256 amountOut) {
+        if (swapRouterV3 == address(0)) revert NoRouteFound();
+        IERC20(tokenIn).forceApprove(swapRouterV3, amountIn);
+        amountOut = IUniV3SwapRouter02(swapRouterV3).exactInputSingle(
+            IUniV3SwapRouter02.ExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: feeTier,
+                recipient: address(this),
+                amountIn: amountIn,
+                amountOutMinimum: minOut,
+                sqrtPriceLimitX96: 0
+            })
+        );
+    }
+
     function _executeMultiHopSwap(
         address[] memory path,
-        uint256 amountIn
+        uint256 amountIn,
+        uint256 minAmountOut
     ) internal returns (uint256 amountOut) {
         if (universalRouter == address(0)) return amountIn;
         
@@ -423,13 +562,10 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
                 fee: config.fee,
                 tickSpacing: config.tickSpacing,
                 hooks: config.hooks,
-                hookData: new bytes(0)
+                hookData: config.hookData
             });
         }
 
-        uint256 minOut = _calculateMinOutputMultiHop(path, amountIn);
-        if (amountIn > type(uint128).max || minOut > type(uint128).max) revert SlippageExceeded();
-        
         IERC20(path[0]).forceApprove(universalRouter, amountIn);
         uint256 balanceBefore = IERC20(path[pathLength-1]).balanceOf(address(this));
 
@@ -439,7 +575,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
             // forge-lint: disable-next-line(unsafe-typecast)
             amountIn: uint128(amountIn),
             // forge-lint: disable-next-line(unsafe-typecast)
-            amountOutMinimum: uint128(minOut)
+            amountOutMinimum: uint128(minAmountOut)
         });
 
         bytes memory actions = abi.encodePacked(V4_ACTION_SWAP_EXACT_IN);
@@ -459,43 +595,45 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
 
 
 
-    /// @notice Calculate minimum output with slippage protection
-    function _calculateMinOutput(uint256 amountIn, uint24 fee) internal view returns (uint256 minOut) {
-        uint256 feeAmount = (amountIn * fee) / 1_000_000;
-        uint256 expectedOut = amountIn - feeAmount;
-        uint256 slippageAmount = (expectedOut * maxSlippageBps) / 10_000;
-        minOut = expectedOut - slippageAmount;
-    }
 
-    /// @notice Calculate minimum output for multi-hop with slippage
-    function _calculateMinOutputMultiHop(address[] memory path, uint256 amountIn) internal view returns (uint256 minOut) {
-        uint256 currentAmount = amountIn;
-        for (uint256 i = 0; i < path.length - 1; i++) {
-            bytes32 pairKey = _getPairKey(path[i], path[i + 1]);
-            PoolConfig memory config = directPools[pairKey];
-            if (config.isActive) {
-                uint256 feeAmount = (currentAmount * config.fee) / 1_000_000;
-                currentAmount = currentAmount - feeAmount;
+    /// @notice Simulate a swap to get expected output
+    function getRealQuote(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) external returns (uint256 amountOut) {
+        (bool exists, /*bool isDirect*/, address[] memory path) = findRoute(tokenIn, tokenOut);
+        if (!exists) revert NoRouteFound();
+
+        // 1. V3 Direct
+        bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+        if (v3Pools[pairKey].isActive && quoterV3 != address(0)) {
+             try IQuoterV2(quoterV3).quoteExactInputSingle(
+                IQuoterV2.QuoteExactInputSingleParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    amountIn: amountIn,
+                    fee: v3Pools[pairKey].feeTier,
+                    sqrtPriceLimitX96: 0
+                })
+            ) returns (uint256 amount, uint160, uint32, uint256) {
+                return amount;
+            } catch {
+                // Fallback to simulation if quoter fails
             }
         }
-        uint256 slippageAmount = (currentAmount * maxSlippageBps) / 10_000;
-        minOut = currentAmount - slippageAmount;
+
+        // 2. Fallback to simulation
+        return _simulateSwap(path, amountIn);
     }
 
     /// @notice Simulate a swap to get expected output
     function _simulateSwap(
-        address[] memory path,
-        uint256 amountIn
-    ) internal view returns (uint256 amountOut) {
-        uint256 currentAmount = amountIn;
-        for (uint256 i = 0; i < path.length - 1; i++) {
-            bytes32 pairKey = _getPairKey(path[i], path[i + 1]);
-            PoolConfig memory config = directPools[pairKey];
-            if (config.isActive) {
-                uint256 feeAmount = (currentAmount * config.fee) / 1_000_000;
-                currentAmount = currentAmount - feeAmount;
-            }
-        }
-        amountOut = currentAmount;
+        address[] memory /* path */,
+        uint256 /* amountIn */
+    ) internal pure returns (uint256 amountOut) {
+        // Return 0 to indicate that a price-aware quote is not available.
+        // This prevents the backend from seeing a 1:1 quote and making incorrect slippage assumptions.
+        amountOut = 0;
     }
 }

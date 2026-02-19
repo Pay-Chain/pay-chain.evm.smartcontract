@@ -17,10 +17,15 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
     /// @dev bridgeType: 0 = Hyperbridge (Default), 1 = CCIP, 2 = LayerZero
     mapping(string => mapping(uint8 => address)) public adapters;
 
+    /// @notice Bridge operating mode: MESSAGE_LIQUIDITY uses dest vault, TOKEN_BRIDGE moves actual tokens
+    enum BridgeMode { MESSAGE_LIQUIDITY, TOKEN_BRIDGE }
+    mapping(uint8 => BridgeMode) public bridgeModes;
+
     // ============ Events ============
 
     event AdapterRegistered(string destChainId, uint8 bridgeType, address adapter);
     event PaymentRouted(bytes32 indexed paymentId, string destChainId, uint8 bridgeType, address adapter);
+    event BridgeModeSet(uint8 bridgeType, BridgeMode mode);
 
     // ============ Errors ============
 
@@ -47,6 +52,14 @@ contract PayChainRouter is Ownable, ReentrancyGuard {
         if (adapter == address(0)) revert InvalidAdapter();
         adapters[destChainId][bridgeType] = adapter;
         emit AdapterRegistered(destChainId, bridgeType, adapter);
+    }
+
+    /// @notice Set the operating mode for a bridge type
+    /// @param bridgeType Bridge type (0=HB, 1=CCIP, 2=LZ)
+    /// @param mode MESSAGE_LIQUIDITY (dest vault) or TOKEN_BRIDGE (actual token transfer)
+    function setBridgeMode(uint8 bridgeType, BridgeMode mode) external onlyOwner {
+        bridgeModes[bridgeType] = mode;
+        emit BridgeModeSet(bridgeType, mode);
     }
 
     // ============ View Functions ============

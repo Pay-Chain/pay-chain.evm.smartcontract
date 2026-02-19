@@ -75,6 +75,46 @@ contract MockUniversalRouter {
     }
 }
 
+contract MockSwapRouterV3 {
+    mapping(address => mapping(address => uint256)) public rates;
+
+    function setRate(address tokenIn, address tokenOut, uint256 rate) external {
+        rates[tokenIn][tokenOut] = rate;
+    }
+
+    function exactInputSingle(
+        IUniV3SwapRouter02.ExactInputSingleParams calldata params
+    ) external payable returns (uint256 amountOut) {
+        uint256 rate = rates[params.tokenIn][params.tokenOut];
+        require(rate > 0, "MockV3: No rate");
+        amountOut = (params.amountIn * rate) / 1e18;
+        require(amountOut >= params.amountOutMinimum, "MockV3: slippage");
+
+        require(
+            IERC20(params.tokenIn).transferFrom(msg.sender, address(this), params.amountIn),
+            "MockV3 transferFrom failed"
+        );
+        IMintable(params.tokenOut).blockTransfer(params.recipient, amountOut);
+    }
+}
+
+contract MockQuoterV2 {
+    mapping(address => mapping(address => uint256)) public rates;
+
+    function setRate(address tokenIn, address tokenOut, uint256 rate) external {
+        rates[tokenIn][tokenOut] = rate;
+    }
+
+    function quoteExactInputSingle(
+        IQuoterV2.QuoteExactInputSingleParams memory params
+    ) external view returns (uint256 amountOut, uint160, uint32, uint256) {
+        uint256 rate = rates[params.tokenIn][params.tokenOut];
+        require(rate > 0, "MockQuoter: No rate");
+        amountOut = (params.amountIn * rate) / 1e18;
+        return (amountOut, 0, 0, 0);
+    }
+}
+
 // Extension to allow Router to mint output tokens (simulator)
 contract MockMintableERC20 is MockERC20 {
     constructor(string memory n, string memory s) MockERC20(n, s) {}
@@ -88,6 +128,8 @@ contract MockMintableERC20 is MockERC20 {
 contract TokenSwapperV4Test is Test {
     TokenSwapper swapper;
     MockUniversalRouter router;
+    MockSwapRouterV3 routerV3;
+    MockQuoterV2 quoter;
     MockMintableERC20 tokenA;
     MockMintableERC20 tokenB;
     MockMintableERC20 tokenC;
@@ -97,11 +139,15 @@ contract TokenSwapperV4Test is Test {
 
     function setUp() public {
         router = new MockUniversalRouter();
+        routerV3 = new MockSwapRouterV3();
+        quoter = new MockQuoterV2();
         tokenA = new MockMintableERC20("Token A", "TKA");
         tokenB = new MockMintableERC20("Token B", "TKB");
         tokenC = new MockMintableERC20("Token C", "TKC");
 
         swapper = new TokenSwapper(address(router), address(0x2) /* PM */, address(tokenB) /* Bridge */);
+        swapper.setV3Router(address(routerV3));
+        swapper.setQuoterV3(address(quoter));
         
         // Fund Router just in case, though it mints
         tokenA.mint(address(router), 10000e18);
@@ -115,28 +161,64 @@ contract TokenSwapperV4Test is Test {
     // --- Admin Tests ---
 
     function test_Admin_SetDirectPool() public {
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
         
         bytes32 key = keccak256(abi.encodePacked(
             address(tokenA) < address(tokenB) ? address(tokenA) : address(tokenB),
             address(tokenA) < address(tokenB) ? address(tokenB) : address(tokenA)
         ));
         
-        (uint24 fee, , , bool active) = swapper.directPools(key);
+        (uint24 fee, , , bytes memory hookData, bool active) = swapper.directPools(key);
         assertEq(fee, 3000);
+        assertEq(hookData.length, 0);
         assertTrue(active);
+    }
+
+    function test_Admin_SetDirectPool_WithHookData() public {
+        bytes memory data = hex"123456";
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), data);
+        
+        bytes32 key = keccak256(abi.encodePacked(
+            address(tokenA) < address(tokenB) ? address(tokenA) : address(tokenB),
+            address(tokenA) < address(tokenB) ? address(tokenB) : address(tokenA)
+        ));
+        
+        (, , , bytes memory hookData, ) = swapper.directPools(key);
+        assertEq(hookData, data);
+    }
+    
+    function test_Constructor_RevertInvalidAddress() public {
+        vm.expectRevert(TokenSwapper.InvalidAddress.selector);
+        new TokenSwapper(address(0), address(0x2), address(0x3));
+
+        vm.expectRevert(TokenSwapper.InvalidAddress.selector);
+        new TokenSwapper(address(0x1), address(0), address(0x3));
+    }
+    
+    function test_GetRealQuote_V3() public {
+        // Setup V3 pool
+        swapper.setV3Pool(address(tokenA), address(tokenB), 3000);
+        quoter.setRate(address(tokenA), address(tokenB), 2e18); // 1 A -> 2 B
+
+        // Normal findRoute should return V3 path
+        (bool exists,,) = swapper.findRoute(address(tokenA), address(tokenB));
+        assertTrue(exists);
+
+        // Call getRealQuote
+        uint256 quote = swapper.getRealQuote(address(tokenA), address(tokenB), 10e18);
+        assertEq(quote, 20e18);
     }
 
     function test_Admin_Revert_InvalidAddress() public {
         vm.expectRevert(TokenSwapper.InvalidAddress.selector);
-        swapper.setDirectPool(address(0), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(0), address(tokenB), 3000, 60, address(0), new bytes(0));
     }
 
     // --- Direct Swap Tests ---
 
     function test_Swap_Direct_Success() public {
         // Config
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
         router.setRate(address(tokenA), address(tokenB), 1e18); // 1:1
 
         // Setup User
@@ -169,8 +251,32 @@ contract TokenSwapperV4Test is Test {
         assertEq(tokenB.balanceOf(user) - balPre, 10e18);
     }
 
+    function test_FindRoute_V3Fallback() public {
+        swapper.setV3Pool(address(tokenA), address(tokenB), 3000);
+
+        (bool exists, bool isDirect, address[] memory path) = swapper.findRoute(address(tokenA), address(tokenB));
+        assertTrue(exists, "Route should exist");
+        assertTrue(isDirect, "Should use direct route");
+        assertEq(path.length, 2);
+        assertEq(path[0], address(tokenA));
+        assertEq(path[1], address(tokenB));
+    }
+
+    function test_Swap_Direct_V3Fallback_Success() public {
+        swapper.setV3Pool(address(tokenA), address(tokenB), 3000);
+        routerV3.setRate(address(tokenA), address(tokenB), 1e18); // 1:1
+
+        tokenA.mint(address(this), 100e18);
+        tokenA.approve(address(swapper), 100e18);
+
+        uint256 balPre = tokenB.balanceOf(user);
+        uint256 out = swapper.swap(address(tokenA), address(tokenB), 10e18, 9e18, user);
+        assertEq(out, 10e18);
+        assertEq(tokenB.balanceOf(user) - balPre, 10e18);
+    }
+
     function test_Swap_Direct_SlippageRevert() public {
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
         router.setRate(address(tokenA), address(tokenB), 0.5e18); // 1 -> 0.5 (Severe slippage)
 
         tokenA.mint(address(this), 100e18);
@@ -192,8 +298,8 @@ contract TokenSwapperV4Test is Test {
 
     function test_FindRoute_MultiHop() public {
         // A -> B -> C
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
-        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
+        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0), new bytes(0));
         // Bridge token is B (configured in constructor)
         
         (bool exists, bool isDirect, address[] memory path) = swapper.findRoute(address(tokenA), address(tokenC));
@@ -208,8 +314,8 @@ contract TokenSwapperV4Test is Test {
 
     function test_Swap_MultiHop_Success() public {
         // A -> B -> C
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
-        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
+        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0), new bytes(0));
         
         // A->C direct rate needed for Mock logic (simplified mock)
         router.setRate(address(tokenA), address(tokenC), 2e18); // 1 A -> 2 C
@@ -233,15 +339,15 @@ contract TokenSwapperV4Test is Test {
     }
 
     function test_EstimateGas_Direct() public {
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
         (uint256 gas, uint256 hops) = swapper.estimateSwapGas(address(tokenA), address(tokenB), 1e18);
         assertEq(gas, 150_000);
         assertEq(hops, 1);
     }
 
     function test_EstimateGas_MultiHop() public {
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
-        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
+        swapper.setDirectPool(address(tokenB), address(tokenC), 3000, 60, address(0), new bytes(0));
         
         (uint256 gas, uint256 hops) = swapper.estimateSwapGas(address(tokenA), address(tokenC), 1e18);
         // 50000 + 2 * 120000 = 290000
@@ -254,7 +360,7 @@ contract TokenSwapperV4Test is Test {
     function testFuzz_Swap_Direct(uint128 amount) public {
         vm.assume(amount > 1000 && amount < 100000e18); // Reasonable range
         
-        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(tokenA), address(tokenB), 3000, 60, address(0), new bytes(0));
         router.setRate(address(tokenA), address(tokenB), 1e18); 
 
         tokenA.mint(address(this), amount);
@@ -274,7 +380,7 @@ contract TokenSwapperV4Test is Test {
 
     function test_Reentrancy_Guard() public {
         MaliciousToken mal = new MaliciousToken(address(swapper));
-        swapper.setDirectPool(address(mal), address(tokenB), 3000, 60, address(0));
+        swapper.setDirectPool(address(mal), address(tokenB), 3000, 60, address(0), new bytes(0));
         
         mal.mint(address(this), 100e18);
         mal.approve(address(swapper), 100e18);

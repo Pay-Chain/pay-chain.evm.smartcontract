@@ -36,6 +36,8 @@ contract CCIPSender is IBridgeAdapter, Ownable {
     error ChainSelectorMissing(string chainId);
     error DestinationAdapterMissing(string chainId);
 
+    event ChainConfigSet(string indexed chainId, uint64 selector, address destAdapter);
+
     // ============ Constructor ============
 
     constructor(
@@ -54,6 +56,28 @@ contract CCIPSender is IBridgeAdapter, Ownable {
     
     function setDestinationAdapter(string calldata chainId, bytes calldata adapter) external onlyOwner {
         destinationAdapters[chainId] = adapter;
+    }
+
+    /// @notice Set chain config in a single call (selector + destination adapter)
+    /// @param chainId CAIP-2 chain identifier
+    /// @param selector CCIP chain selector
+    /// @param destAdapter Remote adapter address on destination chain
+    function setChainConfig(string calldata chainId, uint64 selector, address destAdapter) external onlyOwner {
+        chainSelectors[chainId] = selector;
+        destinationAdapters[chainId] = abi.encode(destAdapter);
+        emit ChainConfigSet(chainId, selector, destAdapter);
+    }
+
+    /// @notice Diagnostic: verify chain config exists
+    /// @param chainId CAIP-2 chain identifier
+    /// @return selector The CCIP chain selector
+    /// @return destAdapter The destination adapter address
+    function getChainConfig(string calldata chainId) external view returns (uint64 selector, address destAdapter) {
+        selector = chainSelectors[chainId];
+        bytes memory adapter = destinationAdapters[chainId];
+        if (adapter.length > 0) {
+            destAdapter = abi.decode(adapter, (address));
+        }
     }
 
     /// @notice Set custom gas limit for a destination chain
@@ -142,7 +166,7 @@ contract CCIPSender is IBridgeAdapter, Ownable {
         
         return Client.EVM2AnyMessage({
             receiver: destAdapter, // Send to configured Remote Adapter
-            data: abi.encode(message.paymentId, message.destToken, message.receiver, message.minAmountOut), // Encode User Receiver & Slippage in Payload
+            data: abi.encode(message.paymentId, message.destToken, message.receiver, message.minAmountOut, message.sourceToken),
             tokenAmounts: tokenAmounts,
             extraArgs: extraArgs,
             feeToken: address(0) // Pay in Native

@@ -14,7 +14,8 @@ contract DeployArbitrum is DeployCommon {
             uniswapUniversalRouter: vm.envOr("ARBITRUM_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("ARBITRUM_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("ARBITRUM_USDC", address(0)), 
-            feeRecipient: feeRecipient
+            feeRecipient: feeRecipient,
+            enableSourceSideSwap: vm.envOr("ARBITRUM_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to Arbitrum...");

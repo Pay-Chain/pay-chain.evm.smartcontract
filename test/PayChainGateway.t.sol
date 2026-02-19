@@ -243,6 +243,10 @@ contract PayChainGatewayTest is Test {
     function testReceivePayment() public {
         // Test CCIP Receiver Adapter Flow
         
+        // 0. Configure trust for source chain
+        vm.prank(msg.sender);
+        ccipReceiver.setTrustedSender(1, abi.encode(address(ccipSender)));
+
         // 1. Fund the Adapter (simulating CCIP Router delivering tokens)
         vm.startPrank(msg.sender);
         require(token.transfer(address(ccipReceiver), 50 * 10**18), "fund ccip receiver failed");
@@ -259,7 +263,7 @@ contract PayChainGatewayTest is Test {
             messageId: keccak256("msg"),
             sourceChainSelector: 1, // Source
             sender: abi.encode(address(ccipSender)), // Original sender on remote chain
-            data: abi.encode(keccak256("payment"), address(token), merchant), // Payload: id, destToken, receiver
+            data: abi.encode(keccak256("payment"), address(token), merchant, uint256(0)), // 4-field: id, destToken, receiver, minAmountOut
             destTokenAmounts: tokenAmounts
         });
         
@@ -410,6 +414,43 @@ contract PayChainGatewayTest is Test {
         assertEq(tokenB.balanceOf(merchant), 100 * 10**18);
         (,,,,,,,, IPayChainGateway.PaymentStatus status,) = gateway.payments(pid);
         assertEq(uint256(status), uint256(IPayChainGateway.PaymentStatus.Completed));
+        vm.stopPrank();
+    }
+
+    function testCreatePaymentCrossChainSourceSideSwapSuccess() public {
+        MockERC20 tokenB = new MockERC20();
+        MockVaultSwapper mockSwapper = new MockVaultSwapper(address(vault));
+
+        vm.startPrank(tokenRegistry.owner());
+        tokenRegistry.setTokenSupport(address(tokenB), true);
+        vm.stopPrank();
+        deal(address(tokenB), address(mockSwapper), 1000 * 10**18);
+
+        vm.startPrank(gateway.owner());
+        gateway.setSwapper(address(mockSwapper));
+        gateway.setEnableSourceSideSwap(true);
+        vm.stopPrank();
+
+        vm.startPrank(vault.owner());
+        vault.setAuthorizedSpender(address(mockSwapper), true);
+        vm.stopPrank();
+
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+
+        bytes32 pid = gateway.createPaymentWithSlippage(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(tokenB),
+            100 * 10**18,
+            100 * 10**18
+        );
+
+        assertTrue(pid != bytes32(0));
+        // Source-side swap bridges destination token through CCIP sender.
+        assertEq(token.balanceOf(address(ccipSender)), 0);
+        assertEq(tokenB.balanceOf(address(ccipSender)), 100 * 10**18);
         vm.stopPrank();
     }
 

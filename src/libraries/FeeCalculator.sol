@@ -22,7 +22,8 @@ library FeeCalculator {
         uint256 feeRateBps
     ) internal pure returns (uint256) {
         uint256 percentageFee = (amount * feeRateBps) / BPS_DENOMINATOR;
-        return percentageFee > fixedBaseFee ? percentageFee : fixedBaseFee;
+        // Cap fee at fixedBaseFee: min(percentage, fixedCap)
+        return percentageFee < fixedBaseFee ? percentageFee : fixedBaseFee;
     }
 
     /**

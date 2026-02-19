@@ -38,6 +38,7 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     PayChainRouter public router;
     TokenRegistry public tokenRegistry;
     ISwapper public swapper;
+    bool public enableSourceSideSwap;
 
     mapping(bytes32 => Payment) public payments;
     mapping(bytes32 => PaymentRequest) public paymentRequests;
@@ -63,8 +64,19 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     event VaultUpdated(address indexed oldVault, address indexed newVault);
     event RouterUpdated(address indexed oldRouter, address indexed newRouter);
     event DefaultBridgeTypeSet(string destChainId, uint8 bridgeType);
+    event SourceSideSwapToggled(bool enabled);
     event PaymentRetryRequested(bytes32 indexed paymentId, bytes32 indexed previousMessageId, uint8 retryCount);
     event MessageRoutingLockUpdated(bool locked);
+    event RouteFailed(bytes32 indexed paymentId, bytes reason);
+    event PaymentFailed(bytes32 indexed paymentId, string reason);
+
+    // ============ Diagnostics ============
+
+    /// @notice Stores last revert data per payment for observability (read by diagnostics API)
+    mapping(bytes32 => bytes) public lastRouteError;
+
+    /// @notice Authorized receiver adapters that can call markPaymentFailed
+    mapping(address => bool) public isAuthorizedAdapter;
 
     // ============ Constructor ============
 
@@ -103,9 +115,18 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         swapper = ISwapper(_swapper);
     }
 
+    function setEnableSourceSideSwap(bool enabled) external onlyOwner {
+        enableSourceSideSwap = enabled;
+        emit SourceSideSwapToggled(enabled);
+    }
+
     function setDefaultBridgeType(string calldata destChainId, uint8 bridgeType) external onlyOwner {
         defaultBridgeTypes[destChainId] = bridgeType;
         emit DefaultBridgeTypeSet(destChainId, bridgeType);
+    }
+
+    function setAuthorizedAdapter(address adapter, bool authorized) external onlyOwner {
+        isAuthorizedAdapter[adapter] = authorized;
     }
 
     // ============ Core: Cross-Chain Payment ============
@@ -169,6 +190,10 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         if (!isSameChain) {
             bridgeType = defaultBridgeTypes[destChainId];
             require(router.hasAdapter(destChainId, bridgeType), "No adapter for destination");
+            // TOKEN_BRIDGE mode physically moves tokens — source and dest must match
+            if (router.bridgeModes(bridgeType) == PayChainRouter.BridgeMode.TOKEN_BRIDGE) {
+                require(sourceToken == destToken, "TOKEN_BRIDGE requires same token");
+            }
         }
 
         // ========== Fee Calculation ==========
@@ -246,6 +271,22 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             minAmountOut: minAmountOut
         });
 
+        // S5: optional source-side swap before bridge routing.
+        // Swap sourceToken -> destToken inside source vault so bridged asset already matches destination token.
+        if (enableSourceSideSwap && sourceToken != destToken) {
+            require(tokenRegistry.isTokenSupported(destToken), "Destination token not supported");
+            require(address(swapper) != address(0), "Swapper not configured");
+            uint256 bridgeAmount = IVaultSwapper(address(swapper)).swapFromVault(
+                sourceToken,
+                destToken,
+                amount,
+                minAmountOut,
+                address(vault)
+            );
+            message.sourceToken = destToken;
+            message.amount = bridgeAmount;
+        }
+
         paymentMessages[paymentId] = message;
         paymentBridgeType[paymentId] = bridgeType;
 
@@ -275,10 +316,13 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             bytes32 routedMessageId
         ) {
             bridgeMessageId = routedMessageId;
-        } catch {
+        } catch (bytes memory reason) {
             _isRoutingMessage = false;
             emit MessageRoutingLockUpdated(false);
-            revert("Route payment failed");
+            emit RouteFailed(paymentId, reason);
+            lastRouteError[paymentId] = reason;
+            // Forward the original adapter error instead of a generic message
+            assembly { revert(add(reason, 0x20), mload(reason)) }
         }
 
         require(bridgeMessageId != bytes32(0), "Invalid bridge message id");
@@ -477,6 +521,15 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         vault.pushTokens(payment.sourceToken, payment.sender, payment.amount);
         
         emit PaymentRefunded(paymentId, payment.amount);
+    }
+
+    /// @notice Mark a payment as failed (called by authorized adapters on timeout/bridge failure)
+    function markPaymentFailed(bytes32 paymentId, string calldata reason) external {
+        require(isAuthorizedAdapter[msg.sender], "Not authorized adapter");
+        Payment storage payment = payments[paymentId];
+        require(payment.sender != address(0), "Payment not found");
+        payment.status = PaymentStatus.Failed;
+        emit PaymentFailed(paymentId, reason);
     }
     
     function getPayment(bytes32 paymentId) external view override returns (Payment memory) {

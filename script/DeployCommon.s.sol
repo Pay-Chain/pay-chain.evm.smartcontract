@@ -23,6 +23,7 @@ abstract contract DeployCommon is Script {
         address uniswapPoolManager;
         address bridgeToken;
         address feeRecipient; // Not strictly deployment config but needed
+        bool enableSourceSideSwap;
     }
 
     function deploySystem(DeploymentConfig memory config) internal returns (
@@ -70,6 +71,7 @@ abstract contract DeployCommon is Script {
 
         // 4. Set Swapper in Gateway
         gateway_.setSwapper(address(swapper));
+        gateway_.setEnableSourceSideSwap(config.enableSourceSideSwap);
 
         // 5. Deploy Adapters (Only if addresses provided)
         if (config.ccipRouter != address(0)) {
@@ -78,22 +80,26 @@ abstract contract DeployCommon is Script {
             
             CCIPReceiverAdapter ccipReceiver = new CCIPReceiverAdapter(config.ccipRouter, address(gateway_));
             console.log("CCIPReceiverAdapter deployed at:", address(ccipReceiver));
+            ccipReceiver.setSwapper(address(swapper));
             
             vault.setAuthorizedSpender(address(ccipSender), true);
             vault.setAuthorizedSpender(address(ccipReceiver), true);
+            gateway_.setAuthorizedAdapter(address(ccipReceiver), true);
             
             // Note: Register adapter in Router manually or here if chain IDs known
         }
 
         if (config.hyperbridgeHost != address(0)) {
-            HyperbridgeSender hyperbridgeSender = new HyperbridgeSender(address(vault), config.hyperbridgeHost);
+            HyperbridgeSender hyperbridgeSender = new HyperbridgeSender(address(vault), config.hyperbridgeHost, address(gateway_));
             console.log("HyperbridgeSender deployed at:", address(hyperbridgeSender));
 
             HyperbridgeReceiver hyperbridgeReceiver = new HyperbridgeReceiver(config.hyperbridgeHost, address(gateway_), address(vault));
             console.log("HyperbridgeReceiver deployed at:", address(hyperbridgeReceiver));
+            hyperbridgeReceiver.setSwapper(address(swapper));
             
             vault.setAuthorizedSpender(address(hyperbridgeSender), true);
             vault.setAuthorizedSpender(address(hyperbridgeReceiver), true);
+            gateway_.setAuthorizedAdapter(address(hyperbridgeReceiver), true);
         }
 
         if (config.layerZeroEndpointV2 != address(0)) {
@@ -106,9 +112,11 @@ abstract contract DeployCommon is Script {
                 address(vault)
             );
             console.log("LayerZeroReceiverAdapter deployed at:", address(lzReceiver));
+            lzReceiver.setSwapper(address(swapper));
 
             vault.setAuthorizedSpender(address(lzSender), true);
             vault.setAuthorizedSpender(address(lzReceiver), true);
+            gateway_.setAuthorizedAdapter(address(lzReceiver), true);
         }
 
         // 6. Configure Authorizations

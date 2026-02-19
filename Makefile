@@ -3,9 +3,9 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help env-check build test clean \
-	deploy-base-dry deploy-bsc-dry deploy-arbitrum-dry \
-	deploy-base deploy-bsc deploy-arbitrum \
-	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify
+	deploy-base-dry deploy-bsc-dry deploy-arbitrum-dry deploy-polygon-dry \
+	deploy-base deploy-bsc deploy-arbitrum deploy-polygon \
+	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify deploy-polygon-verify
 
 VERBOSITY ?= -vvvv
 SLOW ?= --slow
@@ -22,16 +22,19 @@ help:
 	@echo "  make deploy-base-dry"
 	@echo "  make deploy-bsc-dry"
 	@echo "  make deploy-arbitrum-dry"
+	@echo "  make deploy-polygon-dry"
 	@echo ""
 	@echo "Broadcast deploy:"
 	@echo "  make deploy-base"
 	@echo "  make deploy-bsc"
 	@echo "  make deploy-arbitrum"
+	@echo "  make deploy-polygon"
 	@echo ""
 	@echo "Broadcast + verify:"
 	@echo "  make deploy-base-verify"
 	@echo "  make deploy-bsc-verify"
 	@echo "  make deploy-arbitrum-verify"
+	@echo "  make deploy-polygon-verify"
 
 env-check:
 	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
@@ -39,9 +42,13 @@ env-check:
 	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
 	@test -n "$(BSC_RPC_URL)" || (echo "Missing BSC_RPC_URL" && exit 1)
 	@test -n "$(ARBITRUM_RPC_URL)" || (echo "Missing ARBITRUM_RPC_URL" && exit 1)
+	@test -n "$(POLYGON_RPC_URL)" || (echo "Missing POLYGON_RPC_URL" && exit 1)
 
 build:
 	@forge build
+
+compile:
+	@forge compile
 
 test:
 	@forge test --offline
@@ -116,4 +123,28 @@ deploy-arbitrum-verify: env-check
 		--broadcast \
 		--verify \
 		--etherscan-api-key $(ARBISCAN_API_KEY) \
+		$(VERBOSITY) $(SLOW)
+
+deploy-polygon-dry: env-check
+	@forge script script/DeployPolygon.s.sol:DeployPolygon \
+		--rpc-url $(POLYGON_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
+
+deploy-polygon: env-check
+	@forge script script/DeployPolygon.s.sol:DeployPolygon \
+		--rpc-url $(POLYGON_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		$(VERBOSITY) $(SLOW)
+
+deploy-polygon-verify: env-check
+	@test -n "$(POLYGONSCAN_API_KEY)" || (echo "Missing POLYGONSCAN_API_KEY" && exit 1)
+	@forge script script/DeployPolygon.s.sol:DeployPolygon \
+		--rpc-url $(POLYGON_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(POLYGONSCAN_API_KEY) \
+		--chain polygon \
 		$(VERBOSITY) $(SLOW)

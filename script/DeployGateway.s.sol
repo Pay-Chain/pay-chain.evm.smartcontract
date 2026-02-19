@@ -19,7 +19,8 @@ contract DeployGateway is DeployCommon {
             uniswapUniversalRouter: vm.envOr("UNISWAP_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("UNISWAP_POOL_MANAGER", address(0)),
             bridgeToken: vm.envOr("BRIDGE_TOKEN", address(0)),
-            feeRecipient: feeRecipient
+            feeRecipient: feeRecipient,
+            enableSourceSideSwap: vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false)
         });
 
         console.log("Deploying Gateway System (Generic)...");
