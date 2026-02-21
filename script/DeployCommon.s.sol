@@ -29,7 +29,8 @@ abstract contract DeployCommon is Script {
     function deploySystem(DeploymentConfig memory config) internal returns (
         PayChainGateway gateway_, 
         PayChainRouter router_, 
-        TokenRegistry registry_
+        TokenRegistry registry_,
+        TokenSwapper swapper_
     ) {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         
@@ -61,26 +62,30 @@ abstract contract DeployCommon is Script {
         console.log("PayChainGateway deployed at:", address(gateway_));
 
         // 3. Deploy Swapper
-        TokenSwapper swapper = new TokenSwapper(
+        swapper_ = new TokenSwapper(
             config.uniswapUniversalRouter,
             config.uniswapPoolManager,
             config.bridgeToken
         );
-        swapper.setVault(address(vault));
-        console.log("TokenSwapper deployed at:", address(swapper));
+        swapper_.setVault(address(vault));
+        console.log("TokenSwapper deployed at:", address(swapper_));
 
         // 4. Set Swapper in Gateway
-        gateway_.setSwapper(address(swapper));
+        gateway_.setSwapper(address(swapper_));
         gateway_.setEnableSourceSideSwap(config.enableSourceSideSwap);
 
-        // 5. Deploy Adapters (Only if addresses provided)
+        // 5. Authorize Gateway on Swapper
+        swapper_.setAuthorizedCaller(address(gateway_), true);
+        console.log("Gateway authorized on Swapper.");
+
+        // 6. Deploy Adapters (Only if addresses provided)
         if (config.ccipRouter != address(0)) {
             CCIPSender ccipSender = new CCIPSender(address(vault), config.ccipRouter);
             console.log("CCIPSender deployed at:", address(ccipSender));
             
             CCIPReceiverAdapter ccipReceiver = new CCIPReceiverAdapter(config.ccipRouter, address(gateway_));
             console.log("CCIPReceiverAdapter deployed at:", address(ccipReceiver));
-            ccipReceiver.setSwapper(address(swapper));
+            ccipReceiver.setSwapper(address(swapper_));
             
             vault.setAuthorizedSpender(address(ccipSender), true);
             vault.setAuthorizedSpender(address(ccipReceiver), true);
@@ -95,7 +100,7 @@ abstract contract DeployCommon is Script {
 
             HyperbridgeReceiver hyperbridgeReceiver = new HyperbridgeReceiver(config.hyperbridgeHost, address(gateway_), address(vault));
             console.log("HyperbridgeReceiver deployed at:", address(hyperbridgeReceiver));
-            hyperbridgeReceiver.setSwapper(address(swapper));
+            hyperbridgeReceiver.setSwapper(address(swapper_));
             
             vault.setAuthorizedSpender(address(hyperbridgeSender), true);
             vault.setAuthorizedSpender(address(hyperbridgeReceiver), true);
@@ -112,7 +117,7 @@ abstract contract DeployCommon is Script {
                 address(vault)
             );
             console.log("LayerZeroReceiverAdapter deployed at:", address(lzReceiver));
-            lzReceiver.setSwapper(address(swapper));
+            lzReceiver.setSwapper(address(swapper_));
 
             vault.setAuthorizedSpender(address(lzSender), true);
             vault.setAuthorizedSpender(address(lzReceiver), true);
@@ -121,7 +126,7 @@ abstract contract DeployCommon is Script {
 
         // 6. Configure Authorizations
         vault.setAuthorizedSpender(address(gateway_), true);
-        vault.setAuthorizedSpender(address(swapper), true);
+        vault.setAuthorizedSpender(address(swapper_), true);
         
         console.log("Vault authorizations set.");
 
@@ -132,6 +137,6 @@ abstract contract DeployCommon is Script {
 
         vm.stopBroadcast();
         
-        return (gateway_, router_, registry_);
+        return (gateway_, router_, registry_, swapper_);
     }
 }

@@ -3,7 +3,8 @@ TokenRegistry deployed at: 0x19cC8187e5DF6D482EF26443FC11C90123348C8e
 PayChainVault deployed at: 0xe3Be18b812b0645674cCa81f24dC5f7bD62911b7
 PayChainRouter deployed at: 0x304185d7B5Eb9790Dc78805D2095612F7a43A291
 PayChainGateway deployed at: 0xBaB8d97Fbdf6788BF40B01C096CFB2cC661ba642
-TokenSwapper deployed at: 0x96562f9A774AA5dc1B3E251Df3B78EBaE682B984 (V2 - Support Multi-hop)
+TokenSwapper deployed at: 0xa9c076CDa14107a31e654EeFCb99109c5eEC4dC3 (V3 - Support Reset Pair & Multi-hop)
+-> Correct Checksummed Address for Viem: 0xa9c076CDa14107a31e654EeFCb99109c5eEC4dC3
 CCIPSender deployed at: 0xc60b6f567562c756bE5E29f31318bb7793852850
 CCIPReceiverAdapter deployed at: 0x95C8aF513D4a898B125A3EE4a34979ef127Ef1c1
 HyperbridgeSender deployed at: 0x58C67aCc6B225e6bFdEedb1edd2E018dfc90432e (Verified)

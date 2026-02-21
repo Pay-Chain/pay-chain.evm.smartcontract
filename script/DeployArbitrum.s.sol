@@ -19,36 +19,32 @@ contract DeployArbitrum is DeployCommon {
         });
 
         console.log("Deploying to Arbitrum...");
-        (,, TokenRegistry registry) = deploySystem(config);
+        (,, TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 
-        // Register additional tokens
-        address usdc = vm.envOr("ARBITRUM_USDC", address(0));
-        if (usdc != address(0)) {
-            registry.setTokenSupport(usdc, true);
-            console.log("Registered ARBITRUM_USDC:", usdc);
-        }
-
+        // 1. Register additional tokens in Registry
+        address usdc = config.bridgeToken; // Already registered in deploySystem
         address usdt = vm.envOr("ARBITRUM_USDT", address(0));
-        if (usdt != address(0)) {
-            registry.setTokenSupport(usdt, true);
-            console.log("Registered ARBITRUM_USDT:", usdt);
-        }
-
         address usd0 = vm.envOr("ARBITRUM_USDTO", address(0));
-        if (usd0 != address(0)) {
-             registry.setTokenSupport(usd0, true);
-             console.log("Registered ARBITRUM_USDTO:", usd0);
-        }
-
         address weth = vm.envOr("ARBITRUM_WETH", address(0));
-        if (weth != address(0)) {
-            registry.setTokenSupport(weth, true);
-            console.log("Registered ARBITRUM_WETH:", weth);
+
+        if (usdt != address(0)) registry.setTokenSupport(usdt, true);
+        if (usd0 != address(0)) registry.setTokenSupport(usd0, true);
+        if (weth != address(0)) registry.setTokenSupport(weth, true);
+
+        // 2. Configure V3 Pools on Swapper
+        if (usdc != address(0) && usdt != address(0)) {
+            swapper.setV3Pool(usdc, usdt, 100);
+            console.log("Configured USDC/USDT V3 pool");
+        }
+        if (usdc != address(0) && weth != address(0)) {
+            swapper.setV3Pool(usdc, weth, 500);
+            console.log("Configured USDC/WETH V3 pool");
         }
 
         vm.stopBroadcast();
+        console.log("Deployment and configuration on Arbitrum complete.");
     }
 }

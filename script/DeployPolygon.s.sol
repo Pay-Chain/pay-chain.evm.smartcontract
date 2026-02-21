@@ -28,36 +28,42 @@ contract DeployPolygon is DeployCommon {
         });
 
         console.log("Deploying to Polygon...");
-        (, , TokenRegistry registry) = deploySystem(config);
+        (, , TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 
-        // Register additional tokens
+        // 1. Register additional tokens in Registry
+        address usdc = config.bridgeToken; // Already registered in deploySystem
         address idrt = vm.envOr("POLYGON_IDRT", address(0));
-        if (idrt != address(0)) {
-            registry.setTokenSupport(idrt, true);
-            console.log("Registered POLYGON_IDRT:", idrt);
-        }
-
         address usdt = vm.envOr("POLYGON_USDT", address(0));
-        if (usdt != address(0)) {
-            registry.setTokenSupport(usdt, true);
-            console.log("Registered POLYGON_USDT:", usdt);
-        }
-
         address weth = vm.envOr("POLYGON_WETH", address(0));
-        if (weth != address(0)) {
-            registry.setTokenSupport(weth, true);
-            console.log("Registered POLYGON_WETH:", weth);
-        }
-
         address dai = vm.envOr("POLYGON_DAI", address(0));
-        if (dai != address(0)) {
-            registry.setTokenSupport(dai, true);
-            console.log("Registered POLYGON_DAI:", dai);
+
+        if (idrt != address(0)) registry.setTokenSupport(idrt, true);
+        if (usdt != address(0)) registry.setTokenSupport(usdt, true);
+        if (weth != address(0)) registry.setTokenSupport(weth, true);
+        if (dai != address(0)) registry.setTokenSupport(dai, true);
+
+        // 2. Configure V3 Pools on Swapper
+        if (usdc != address(0) && usdt != address(0)) {
+            swapper.setV3Pool(usdc, usdt, 100);
+            console.log("Configured USDC/USDT V3 pool");
+        }
+        if (usdc != address(0) && weth != address(0)) {
+            swapper.setV3Pool(usdc, weth, 500);
+            console.log("Configured USDC/WETH V3 pool");
+        }
+        if (usdc != address(0) && dai != address(0)) {
+            swapper.setV3Pool(usdc, dai, 100);
+            console.log("Configured USDC/DAI V3 pool");
+        }
+        if (idrt != address(0) && usdc != address(0)) {
+            swapper.setV3Pool(idrt, usdc, 500); // Assuming 500 based on standard Polygon pools
+            console.log("Configured IDRT/USDC V3 pool");
         }
 
         vm.stopBroadcast();
+        console.log("Deployment and configuration on Polygon complete.");
     }
 }
