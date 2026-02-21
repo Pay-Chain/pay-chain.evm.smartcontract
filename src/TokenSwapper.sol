@@ -120,6 +120,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     );
     event AuthorizedCallerSet(address indexed caller, bool allowed);
     event V4RouterValidated(address indexed router);
+    event RouteRemoved(address indexed tokenIn, address indexed tokenOut, string routeType);
     
     // ============ Constructor ============
 
@@ -297,15 +298,10 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         }
 
         // 3. Check configured multi-hop route
-        address[] storage hops = multiHopRoutes[pairKey];
+        bytes32 directionalKey = _getDirectionalKey(tokenIn, tokenOut);
+        address[] storage hops = multiHopRoutes[directionalKey];
         if (hops.length > 0) {
-            path = new address[](hops.length + 2);
-            path[0] = tokenIn;
-            for (uint256 i = 0; i < hops.length; i++) {
-                path[i + 1] = hops[i];
-            }
-            path[path.length - 1] = tokenOut;
-            return (true, false, path);
+            return (true, false, hops);
         }
 
         // 4. Try via bridge token
@@ -416,9 +412,47 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         });
     }
 
-    // ============ Internal Functions ============
+    /// @notice Set a multi-hop route for a token pair
+    function setMultiHopPath(
+        address tokenIn,
+        address tokenOut,
+        address[] calldata path
+    ) external onlyOwner {
+        if (tokenIn == address(0) || tokenOut == address(0)) revert InvalidAddress();
+        if (path.length < 2) revert InvalidAddress(); 
+        if (path[0] != tokenIn || path[path.length - 1] != tokenOut) revert InvalidAddress();
+
+        bytes32 directionalKey = _getDirectionalKey(tokenIn, tokenOut);
+        multiHopRoutes[directionalKey] = path;
+    }
+
+    /// @notice Remove a direct pool route
+    function removeDirectPool(address tokenIn, address tokenOut) external onlyOwner {
+        bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+        delete directPools[pairKey];
+        emit RouteRemoved(tokenIn, tokenOut, "V4_DIRECT");
+    }
+
+    /// @notice Remove a direct V3 fallback route
+    function removeV3Pool(address tokenIn, address tokenOut) external onlyOwner {
+        bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+        delete v3Pools[pairKey];
+        emit RouteRemoved(tokenIn, tokenOut, "V3_DIRECT");
+    }
+
+    /// @notice Remove a multi-hop route
+    function removeMultiHopPath(address tokenIn, address tokenOut) external onlyOwner {
+        bytes32 directionalKey = _getDirectionalKey(tokenIn, tokenOut);
+        delete multiHopRoutes[directionalKey];
+        emit RouteRemoved(tokenIn, tokenOut, "MULTI_HOP");
+    }
 
     // ============ Internal Functions ============
+
+    /// @notice Generate a unique key for a token pair (directional)
+    function _getDirectionalKey(address inToken, address outToken) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(inToken, outToken));
+    }
 
     /// @notice Generate a unique key for a token pair
     function _getPairKey(address a, address b) internal pure returns (bytes32) {
@@ -538,6 +572,56 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     }
 
     function _executeMultiHopSwap(
+        address[] memory path,
+        uint256 amountIn,
+        uint256 minAmountOut
+    ) internal returns (uint256 amountOut) {
+        // Check if the first hop is V4
+        bytes32 firstHopKey = _getPairKey(path[0], path[1]);
+        if (directPools[firstHopKey].isActive) {
+            return _executeV4MultiHopSwap(path, amountIn, minAmountOut);
+        } else if (v3Pools[firstHopKey].isActive) {
+            return _executeV3MultiHopSwap(path, amountIn, minAmountOut);
+        }
+        revert NoRouteFound();
+    }
+
+    function _executeV3MultiHopSwap(
+        address[] memory path,
+        uint256 amountIn,
+        uint256 minAmountOut
+    ) internal returns (uint256 amountOut) {
+        if (swapRouterV3 == address(0)) revert NoRouteFound();
+        
+        uint256 currentAmount = amountIn;
+        for (uint256 i = 0; i < path.length - 1; i++) {
+            address tokenIn = path[i];
+            address tokenOut = path[i+1];
+            bytes32 pairKey = _getPairKey(tokenIn, tokenOut);
+            
+            V3PoolConfig memory config = v3Pools[pairKey];
+            if (!config.isActive) revert PoolNotActive();
+
+            bool isLastHop = i == path.length - 2;
+            uint256 minOut = isLastHop ? minAmountOut : 0;
+
+            IERC20(tokenIn).forceApprove(swapRouterV3, currentAmount);
+            currentAmount = IUniV3SwapRouter02(swapRouterV3).exactInputSingle(
+                IUniV3SwapRouter02.ExactInputSingleParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    fee: config.feeTier,
+                    recipient: address(this),
+                    amountIn: currentAmount,
+                    amountOutMinimum: minOut,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+        }
+        amountOut = currentAmount;
+    }
+
+    function _executeV4MultiHopSwap(
         address[] memory path,
         uint256 amountIn,
         uint256 minAmountOut
