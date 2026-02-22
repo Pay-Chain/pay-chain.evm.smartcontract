@@ -189,7 +189,9 @@ contract BridgeAdaptersTest is Test {
 
         IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(feeToken), address(feeToken));
         uint256 quotedNative = sender.quoteFee(m);
+        uint256 quotedFeeToken = sender.quoteFeeTokenAmount(m);
         assertTrue(quotedNative > 0);
+        assertTrue(quotedFeeToken > 0);
 
         vm.expectRevert();
         sender.sendMessage{value: quotedNative - 1}(m);
@@ -198,7 +200,57 @@ contract BridgeAdaptersTest is Test {
         assertTrue(messageId != bytes32(0));
         assertEq(dispatcher.lastNativeValue(), quotedNative);
         assertEq(dispatcher.lastPayer(), address(this));
-        assertTrue(dispatcher.lastFeeTokenAmount() > 0);
+        // request.fee maps to relayer tip; default tip is zero.
+        assertEq(dispatcher.lastFeeTokenAmount(), 0);
+    }
+
+    function testHyperbridgeQuoteFeeTokenMatchesHostFormulaWithoutTip() public {
+        MockToken feeToken = new MockToken();
+        // 1 native buys 1 feeToken in this mock (multiplier 1)
+        MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 1);
+        // perByte = 2
+        MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 2);
+        PayChainVault vault = new PayChainVault();
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+
+        sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
+        sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
+
+        IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(feeToken), address(feeToken));
+        uint256 quotedFeeToken = sender.quoteFeeTokenAmount(m);
+
+        // body is abi.encode(bytes32,uint256,address,address,uint256,address) => 6 static words = 192 bytes
+        // host protocol fee = perByte * max(32, bodyLen) = 2 * 192 = 384
+        assertEq(quotedFeeToken, 384);
+
+        uint256 quotedNative = sender.quoteFee(m);
+        // multiplier 1 and +10% safety margin
+        assertEq(quotedNative, 422); // floor(384 * 110 / 100)
+    }
+
+    function testHyperbridgeRelayerTipIncludedInQuoteAndDispatchField() public {
+        MockToken feeToken = new MockToken();
+        // multiplier 2 => native quote should be 2x feeToken then +10%
+        MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 2);
+        MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 2);
+        PayChainVault vault = new PayChainVault();
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+
+        sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
+        sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
+        sender.setRelayerFeeTip(DEST_CAIP2, 50);
+
+        IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(feeToken), address(feeToken));
+        uint256 quotedFeeToken = sender.quoteFeeTokenAmount(m);
+        assertEq(quotedFeeToken, 434); // 384 protocol + 50 tip
+
+        uint256 quotedNative = sender.quoteFee(m);
+        assertEq(quotedNative, 954); // floor((434 * 2) * 110 / 100)
+
+        bytes32 messageId = sender.sendMessage{value: quotedNative}(m);
+        assertTrue(messageId != bytes32(0));
+        // request.fee should carry only relayer tip
+        assertEq(dispatcher.lastFeeTokenAmount(), 50);
     }
 
     function testHyperbridgeRouteConfigStatus() public {

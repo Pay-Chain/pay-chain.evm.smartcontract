@@ -60,6 +60,9 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     /// @notice Default timeout for requests (1 hour)
     uint64 public defaultTimeout = 3600;
 
+    /// @notice Optional per-route relayer tip in fee-token units (DispatchPost.fee)
+    mapping(string => uint256) public relayerFeeTips;
+
     // ============ Events ============
 
     /// @notice Optional swap router override (e.g. QuickSwap) to fix staticcall issues
@@ -85,6 +88,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     event PostRequestTimedOut(bytes32 indexed paymentId);
     event SwapRouterSet(address indexed router);
     event SwapperSet(address indexed swapper);
+    event RelayerFeeTipSet(string indexed chainId, uint256 feeTokenAmount);
 
 
     // ============ Errors ============
@@ -152,13 +156,20 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         defaultTimeout = newTimeout;
     }
 
+    /// @notice Set optional relayer tip for a destination chain (fee-token denomination)
+    function setRelayerFeeTip(string calldata chainId, uint256 feeTokenAmount) external onlyOwner {
+        relayerFeeTips[chainId] = feeTokenAmount;
+        emit RelayerFeeTipSet(chainId, feeTokenAmount);
+    }
+
     // ============ IBridgeAdapter Implementation ============
 
     /// @notice Quote the fee in native currency for sending a message via Hyperbridge
-    /// @dev Hyperbridge expects DispatchPost.fee in fee-token units. This method converts
-    ///      that fee-token requirement to native using the host configured swap router.
+    /// @dev Host total charge for POST dispatch is:
+    ///      (perByteFee(dest) * max(32, body.length)) + DispatchPost.fee
+    ///      This quote converts that total fee-token requirement to native.
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
-        uint256 feeTokenAmount = _feeTokenAmount(message);
+        uint256 feeTokenAmount = _dispatchFeeTokenAmount(message);
         address feeToken = IDispatcher(host()).feeToken();
         
         // Use configured router or fallback to host's router
@@ -170,22 +181,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         if (currentRouter == address(0)) revert NativeFeeQuoteUnavailable();
         address weth = IUniswapV2Router02HB(currentRouter).WETH();
 
-        // Tier 1 & 2: TokenSwapper (V4 & V3)
-        if (address(swapper) != address(0)) {
-            // Estimate native fee using rate from swapper
-            // Since ISwapper doesn't have getAmountsIn, we use getQuote for a trial amount
-            uint256 trialAmount = 1 ether;
-            try swapper.getQuote(weth, feeToken, trialAmount) returns (uint256 amountOut) {
-                if (amountOut > 0) {
-                     // feeTokenAmount * (trialAmount / amountOut)
-                     uint256 estimatedFee = (feeTokenAmount * trialAmount) / amountOut;
-                     // Add 10% safety margin
-                     return (estimatedFee * 110) / 100;
-                }
-            } catch {}
-        }
-
-        // Tier 3: Uniswap V2 Fallback
+        // Tier 1: Uniswap V2 Router (authoritative to host dispatch path)
         address[] memory path = new address[](2);
         path[0] = weth;
         path[1] = feeToken;
@@ -195,30 +191,36 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             // Add a small safety margin to reduce underfunded dispatches under fast price movement.
             return (amountsIn[0] * 110) / 100; // +10%
         } catch {
+            // Tier 2: optional swapper-based estimate fallback
+            if (address(swapper) != address(0)) {
+                // Since ISwapper lacks getAmountsIn, estimate via trial quote and invert rate.
+                uint256 trialAmount = 1 ether;
+                try swapper.getQuote(weth, feeToken, trialAmount) returns (uint256 amountOut) {
+                    if (amountOut > 0) {
+                        uint256 estimatedFee = (feeTokenAmount * trialAmount) / amountOut;
+                        return (estimatedFee * 110) / 100;
+                    }
+                } catch {}
+            }
             revert FeeQuoteFailed(feeTokenAmount, path);
         }
     }
 
-    /// @notice Return raw Hyperbridge fee-token amount (not native)
+    /// @notice Return total fee-token amount required by host dispatch (not native)
     function quoteFeeTokenAmount(BridgeMessage calldata message) external view returns (uint256) {
-        return _feeTokenAmount(message);
+        return _dispatchFeeTokenAmount(message);
     }
 
-    /// @notice Quote token-denominated fee required by Hyperbridge dispatcher
-    function _feeTokenAmount(BridgeMessage calldata message) internal view returns (uint256 feeTokenAmount) {
+    /// @notice Quote fee-token amount required by dispatcher:
+    ///         protocol byte fee + optional relayer tip
+    function _dispatchFeeTokenAmount(BridgeMessage calldata message) internal view returns (uint256) {
         bytes memory smId = stateMachineIds[message.destChainId];
         if (smId.length == 0) revert StateMachineIdNotSet(message.destChainId);
 
-        // Calculate payload size
         bytes memory body = _encodePayload(message);
-        
-        // Get per-byte fee from dispatcher
-        uint256 perByteFee = IDispatcher(host()).perByteFee(smId);
-        
-        // Calculate fee based on message size
-        // Body + overhead for ISMP message structure
-        uint256 messageSize = body.length + 256; // 256 bytes overhead estimate
-        return messageSize * perByteFee;
+        uint256 len = body.length < 32 ? 32 : body.length;
+        uint256 protocolByteFee = IDispatcher(host()).perByteFee(smId) * len;
+        return protocolByteFee + relayerFeeTips[message.destChainId];
     }
 
     /// @notice Send a cross-chain message via Hyperbridge ISMP
@@ -232,7 +234,8 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         if (destContract.length == 0) revert DestinationNotSet(message.destChainId);
 
         address feeToken = IDispatcher(host()).feeToken();
-        uint256 feeTokenAmount = _feeTokenAmount(message);
+        uint256 totalFeeTokenAmount = _dispatchFeeTokenAmount(message);
+        uint256 relayerTip = relayerFeeTips[message.destChainId];
         uint256 nativeQuote = this.quoteFee(message);
         if (msg.value < nativeQuote) revert InsufficientNativeFee(nativeQuote, msg.value);
 
@@ -255,8 +258,8 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             IERC20(weth).forceApprove(address(swapper), nativeQuote);
             
             // 3. Swap WETH to feeToken
-            try swapper.swap(weth, feeToken, nativeQuote, feeTokenAmount, address(this)) returns (uint256 amountOut) {
-                if (amountOut >= feeTokenAmount) {
+            try swapper.swap(weth, feeToken, nativeQuote, totalFeeTokenAmount, address(this)) returns (uint256 amountOut) {
+                if (amountOut >= totalFeeTokenAmount) {
                     swapped = true;
                 } else {
                     // Not enough tokens swapped, unwrap back to native for V2 fallback
@@ -274,24 +277,28 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             to: destContract,
             body: body,
             timeout: defaultTimeout,
-            fee: feeTokenAmount,
+            fee: relayerTip,
             payer: swapped ? address(this) : msg.sender
         });
 
         if (swapped) {
             // Direct fee token payment
-            IERC20(feeToken).forceApprove(host(), feeTokenAmount);
+            IERC20(feeToken).forceApprove(host(), totalFeeTokenAmount);
             commitment = IDispatcher(host()).dispatch{value: 0}(request);
         } else {
             // Tier 3: Uniswap V2 Fallback (Dispatcher internal swap)
             commitment = IDispatcher(host()).dispatch{value: nativeQuote}(request);
         }
 
-        // Refund excess native tokens
+        // Refund excess native tokens (best-effort).
+        // In PayChain flow, msg.sender is typically the router contract which may not accept plain ETH transfers.
+        // Do not revert cross-chain dispatch if refund cannot be delivered.
         uint256 refund = msg.value - nativeQuote;
         if (refund > 0) {
             (bool success, ) = msg.sender.call{value: refund}("");
-            require(success, "Refund failed");
+            if (!success) {
+                // ignore refund failure
+            }
         }
 
         emit MessageDispatched(
@@ -407,4 +414,3 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         require(success, "Withdraw failed");
     }
 }
-

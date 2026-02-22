@@ -5,7 +5,8 @@
 .PHONY: help env-check build test clean \
 	deploy-base-dry deploy-bsc-dry deploy-arbitrum-dry deploy-polygon-dry \
 	deploy-base deploy-bsc deploy-arbitrum deploy-polygon \
-	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify deploy-polygon-verify
+	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify deploy-polygon-verify \
+	rotate-hb-dry rotate-hb
 
 VERBOSITY ?= -vvvv
 SLOW ?= --slow
@@ -35,6 +36,10 @@ help:
 	@echo "  make deploy-bsc-verify"
 	@echo "  make deploy-arbitrum-verify"
 	@echo "  make deploy-polygon-verify"
+	@echo ""
+	@echo "Hyperbridge sender rotation (minimal redeploy):"
+	@echo "  make rotate-hb-dry"
+	@echo "  make rotate-hb"
 
 env-check:
 	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
@@ -147,4 +152,23 @@ deploy-polygon-verify: env-check
 		--verify \
 		--etherscan-api-key $(POLYGONSCAN_API_KEY) \
 		--chain polygon \
+		$(VERBOSITY) $(SLOW)
+
+rotate-hb-dry:
+	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
+	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
+	@forge script script/RotateHyperbridgeSender.s.sol:RotateHyperbridgeSender \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
+
+rotate-hb:
+	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
+	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
+	@forge script script/RotateHyperbridgeSender.s.sol:RotateHyperbridgeSender \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(BASESCAN_API_KEY) \
 		$(VERBOSITY) $(SLOW)
