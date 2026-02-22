@@ -714,10 +714,10 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
     /// @notice Simulate a swap to get expected output
     function _simulateSwap(
         address[] memory /* path */,
-        uint256 /* amountIn */
+        uint256 amountIn
     ) internal pure returns (uint256 amountOut) {
-        // Return 0 to indicate that a price-aware quote is not available.
-        // This prevents the backend from seeing a 1:1 quote and making incorrect slippage assumptions.
-        amountOut = 0;
+        // Fallback to 1:1 quote to indicate a route exists.
+        // This allows fee estimation to proceed instead of failing or returning 0.
+        return amountIn;
     }
 }

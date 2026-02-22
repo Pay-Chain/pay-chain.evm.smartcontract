@@ -31,12 +31,14 @@ contract DeployBase is DeployCommon {
         address cbbtc = vm.envOr("BASE_CBBTC", address(0));
         address wbtc = vm.envOr("BASE_WBTC", address(0));
         address idrx = vm.envOr("BASE_IDRX", address(0));
+        address cbeth = vm.envOr("BASE_CBETH", address(0));
 
         if (usde != address(0)) registry.setTokenSupport(usde, true);
         if (weth != address(0)) registry.setTokenSupport(weth, true);
         if (cbbtc != address(0)) registry.setTokenSupport(cbbtc, true);
         if (wbtc != address(0)) registry.setTokenSupport(wbtc, true);
         if (idrx != address(0)) registry.setTokenSupport(idrx, true);
+        if (cbeth != address(0)) registry.setTokenSupport(cbeth, true);
 
         // 2. Configure V3 Pools on Swapper
         if (idrx != address(0) && usdc != address(0)) {
@@ -58,6 +60,10 @@ contract DeployBase is DeployCommon {
         if (usdc != address(0) && usde != address(0)) {
             swapper.setV3Pool(usdc, usde, 100);
             console.log("Configured USDC/USDe V3 pool");
+        }
+        if (usdc != address(0) && cbeth != address(0)) {
+            swapper.setV3Pool(usdc, cbeth, 500);
+            console.log("Configured USDC/cbETH V3 pool");
         }
 
         // 3. Configure Multi-hop Paths

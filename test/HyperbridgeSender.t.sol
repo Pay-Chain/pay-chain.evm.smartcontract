@@ -28,6 +28,38 @@ contract MockRouter is IUniswapV2Router02HB {
     }
 }
 
+contract MockSwapper is ISwapperHB {
+    uint256 public rate = 1; // 1 native = 1 feeToken
+    bool public failSwap = false;
+    uint256 public lastAmountIn;
+
+    function setRate(uint256 _rate) external {
+        rate = _rate;
+    }
+
+    function setFailSwap(bool _fail) external {
+        failSwap = _fail;
+    }
+
+    function getQuote(address /*tokenIn*/, address /*tokenOut*/, uint256 amountIn) external view override returns (uint256 amountOut) {
+        return amountIn * rate;
+    }
+
+    function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, address recipient) external override returns (uint256 amountOut) {
+        if (failSwap) revert("Swap failed");
+        lastAmountIn = amountIn;
+        amountOut = amountIn * rate;
+        if (amountOut < minAmountOut) return 0;
+        
+        // Mock transfer feeToken to recipient
+        MockERC20(tokenOut).mint(recipient, amountOut);
+        // Burn WETH from sender
+        MockERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        
+        return amountOut;
+    }
+}
+
 contract MockHost {
     address public uniswapV2Router;
     address public feeToken;
@@ -60,28 +92,45 @@ contract MockERC20 is IERC20 {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
-    function transfer(address to, uint256 amount) external returns (bool) {
+    function transfer(address to, uint256 amount) external virtual returns (bool) {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
     }
 
-    function approve(address spender, uint256 amount) external returns (bool) {
+    function approve(address spender, uint256 amount) external virtual returns (bool) {
         allowance[msg.sender][spender] = amount;
         return true;
     }
 
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+    function transferFrom(address from, address to, uint256 amount) external virtual returns (bool) {
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
         return true;
     }
     
-    function mint(address to, uint256 amount) external {
+    function mint(address to, uint256 amount) external virtual {
         balanceOf[to] += amount;
     }
 
-    function totalSupply() external pure returns (uint256) { return 0; }
+    function totalSupply() external pure virtual returns (uint256) { return 0; }
+}
+
+contract MockWETH is MockERC20, IWETHHB {
+    function deposit() external payable override {
+        balanceOf[msg.sender] += msg.value;
+    }
+
+    function withdraw(uint wad) external override {
+        balanceOf[msg.sender] -= wad;
+        (bool success, ) = msg.sender.call{value: wad}("");
+        require(success, "ETH transfer failed");
+    }
+
+    function approve(address spender, uint256 amount) external override(MockERC20, IWETHHB) returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
 }
 
 contract MockGateway {
@@ -103,8 +152,9 @@ contract HyperbridgeSenderTest is Test {
     MockVault vault;
     MockERC20 token;
     MockRouter router;
-    MockERC20 weth;
+    MockWETH weth;
     MockGateway gateway;
+    MockSwapper swapper;
 
     function setUp() public {
         token = new MockERC20();
@@ -113,10 +163,12 @@ contract HyperbridgeSenderTest is Test {
         gateway = new MockGateway();
         sender = new HyperbridgeSender(address(vault), address(host), address(gateway));
         
-        weth = new MockERC20();
+        weth = new MockWETH();
         router = new MockRouter(address(weth));
         host.setUniswapV2Router(address(router));
         host.setFeeToken(address(token)); // use token as fee token
+        
+        swapper = new MockSwapper();
     }
 
     function test_RevertIf_DestinationLengthInvalid() public {
@@ -210,6 +262,79 @@ contract HyperbridgeSenderTest is Test {
 
         assertTrue(gateway.paymentsFailed(paymentId));
         assertTrue(gateway.refundsProcessed(paymentId));
+    }
+
+    function test_SendMessage_WithSwapper_Success() public {
+        sender.setSwapper(address(swapper));
+        
+        address validAddr = address(0x123);
+        sender.setDestinationContract("EVM-2", abi.encodePacked(validAddr));
+        sender.setStateMachineId("EVM-2", bytes("EVM-2"));
+        host.setPerByteFee(bytes("EVM-2"), 1);
+
+        IBridgeAdapter.BridgeMessage memory bridgeMsg = IBridgeAdapter.BridgeMessage({
+            paymentId: bytes32(uint256(1)),
+            receiver: address(0x123),
+            sourceToken: address(0),
+            destToken: address(0),
+            amount: 100,
+            destChainId: "EVM-2",
+            minAmountOut: 0
+        });
+
+        uint256 quotedFee = sender.quoteFee(bridgeMsg);
+        
+        // Ensure swapper has tokens to give
+        token.mint(address(swapper), 1000000); 
+
+        uint256 balanceBefore = address(this).balance;
+        sender.sendMessage{value: quotedFee}(bridgeMsg);
+        uint256 balanceAfter = address(this).balance;
+
+        assertEq(balanceBefore - balanceAfter, quotedFee);
+        // Swapper should have received WETH
+        assertEq(weth.balanceOf(address(swapper)), quotedFee);
+    }
+
+    function test_SendMessage_FallbackToV2_WhenSwapperFails() public {
+        sender.setSwapper(address(swapper));
+        swapper.setFailSwap(true);
+        
+        address validAddr = address(0x123);
+        sender.setDestinationContract("EVM-2", abi.encodePacked(validAddr));
+        sender.setStateMachineId("EVM-2", bytes("EVM-2"));
+        host.setPerByteFee(bytes("EVM-2"), 1);
+
+        IBridgeAdapter.BridgeMessage memory bridgeMsg = IBridgeAdapter.BridgeMessage({
+            paymentId: bytes32(uint256(2)),
+            receiver: address(0x123),
+            sourceToken: address(0),
+            destToken: address(0),
+            amount: 100,
+            destChainId: "EVM-2",
+            minAmountOut: 0
+        });
+
+        uint256 quotedFee = sender.quoteFee(bridgeMsg);
+        
+        uint256 balanceBefore = address(this).balance;
+        sender.sendMessage{value: quotedFee}(bridgeMsg);
+        uint256 balanceAfter = address(this).balance;
+
+        // Balance should still decrease by quotedFee because fallback uses ETH
+        assertEq(balanceBefore - balanceAfter, quotedFee);
+        // WETH should be 0 because it was unwrapped
+        assertEq(weth.balanceOf(address(sender)), 0);
+    }
+
+    function test_SetSwapper_OnlyOwner() public {
+        address newSwapper = address(0x456);
+        vm.prank(address(0xdead));
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0xdead)));
+        sender.setSwapper(newSwapper);
+        
+        sender.setSwapper(newSwapper);
+        assertEq(address(sender.swapper()), newSwapper);
     }
     
     receive() external payable {}

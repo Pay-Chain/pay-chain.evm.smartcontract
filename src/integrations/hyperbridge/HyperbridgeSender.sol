@@ -17,6 +17,17 @@ interface IUniswapV2Router02HB {
     function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
 }
 
+interface ISwapperHB {
+    function getQuote(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256 amountOut);
+    function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut, address recipient) external returns (uint256 amountOut);
+}
+
+interface IWETHHB {
+    function deposit() external payable;
+    function withdraw(uint wad) external;
+    function approve(address guy, uint wad) external returns (bool);
+}
+
 /**
  * @title HyperbridgeSender
  * @notice Bridge Adapter for sending Hyperbridge ISMP messages
@@ -54,6 +65,10 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     /// @notice Optional swap router override (e.g. QuickSwap) to fix staticcall issues
     address public swapRouter;
 
+    /// @notice Optional TokenSwapper for V4/V3 quotes and swaps
+    ISwapperHB public swapper;
+
+
     // ============ Events ============
 
     event MessageDispatched(
@@ -69,6 +84,8 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     event TimeoutUpdated(uint64 oldTimeout, uint64 newTimeout);
     event PostRequestTimedOut(bytes32 indexed paymentId);
     event SwapRouterSet(address indexed router);
+    event SwapperSet(address indexed swapper);
+
 
     // ============ Errors ============
 
@@ -102,6 +119,14 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         emit SwapRouterSet(_router);
     }
 
+    /// @notice Set the TokenSwapper for V4/V3 quotes and swaps
+    /// @param _swapper Address of the TokenSwapper contract
+    function setSwapper(address _swapper) external onlyOwner {
+        swapper = ISwapperHB(_swapper);
+        emit SwapperSet(_swapper);
+    }
+
+
     /// @notice Set the state machine identifier for a chain
     /// @param chainId CAIP-2 chain identifier (e.g., "eip155:1")
     /// @param stateMachineId Hyperbridge state machine ID (e.g., "EVM-1")
@@ -134,6 +159,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     ///      that fee-token requirement to native using the host configured swap router.
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
         uint256 feeTokenAmount = _feeTokenAmount(message);
+        address feeToken = IDispatcher(host()).feeToken();
         
         // Use configured router or fallback to host's router
         address currentRouter = swapRouter;
@@ -142,10 +168,27 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         }
         
         if (currentRouter == address(0)) revert NativeFeeQuoteUnavailable();
+        address weth = IUniswapV2Router02HB(currentRouter).WETH();
 
+        // Tier 1 & 2: TokenSwapper (V4 & V3)
+        if (address(swapper) != address(0)) {
+            // Estimate native fee using rate from swapper
+            // Since ISwapper doesn't have getAmountsIn, we use getQuote for a trial amount
+            uint256 trialAmount = 1 ether;
+            try swapper.getQuote(weth, feeToken, trialAmount) returns (uint256 amountOut) {
+                if (amountOut > 0) {
+                     // feeTokenAmount * (trialAmount / amountOut)
+                     uint256 estimatedFee = (feeTokenAmount * trialAmount) / amountOut;
+                     // Add 10% safety margin
+                     return (estimatedFee * 110) / 100;
+                }
+            } catch {}
+        }
+
+        // Tier 3: Uniswap V2 Fallback
         address[] memory path = new address[](2);
-        path[0] = IUniswapV2Router02HB(currentRouter).WETH();
-        path[1] = IDispatcher(host()).feeToken();
+        path[0] = weth;
+        path[1] = feeToken;
 
         try IUniswapV2Router02HB(currentRouter).getAmountsIn(feeTokenAmount, path) returns (uint256[] memory amountsIn) {
             if (amountsIn.length == 0) revert NativeFeeQuoteUnavailable();
@@ -188,15 +231,42 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         bytes memory destContract = destinationContracts[message.destChainId];
         if (destContract.length == 0) revert DestinationNotSet(message.destChainId);
 
-        // Note: For Liquidity Network model, tokens remain locked in Vault
-        // Gateway has already deposited tokens to Vault
-        // We just need to send the message to instruct destination to release
-
-        // Encode the payment instruction payload
-        bytes memory body = _encodePayload(message);
+        address feeToken = IDispatcher(host()).feeToken();
         uint256 feeTokenAmount = _feeTokenAmount(message);
         uint256 nativeQuote = this.quoteFee(message);
         if (msg.value < nativeQuote) revert InsufficientNativeFee(nativeQuote, msg.value);
+
+        // Encode the payment instruction payload
+        bytes memory body = _encodePayload(message);
+
+        // Tier 1 & 2: TokenSwapper (V4 & V3)
+        bool swapped = false;
+        if (address(swapper) != address(0)) {
+            address currentRouter = swapRouter;
+            if (currentRouter == address(0)) {
+                currentRouter = IDispatcher(host()).uniswapV2Router();
+            }
+            address weth = IUniswapV2Router02HB(currentRouter).WETH();
+
+            // 1. Wrap native to WETH
+            IWETHHB(weth).deposit{value: nativeQuote}();
+            
+            // 2. Approve swapper
+            IERC20(weth).forceApprove(address(swapper), nativeQuote);
+            
+            // 3. Swap WETH to feeToken
+            try swapper.swap(weth, feeToken, nativeQuote, feeTokenAmount, address(this)) returns (uint256 amountOut) {
+                if (amountOut >= feeTokenAmount) {
+                    swapped = true;
+                } else {
+                    // Not enough tokens swapped, unwrap back to native for V2 fallback
+                    IWETHHB(weth).withdraw(nativeQuote);
+                }
+            } catch {
+                // Swap failed, unwrap back to native for V2 fallback
+                IWETHHB(weth).withdraw(nativeQuote);
+            }
+        }
 
         // Build DispatchPost request
         DispatchPost memory request = DispatchPost({
@@ -204,13 +274,18 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             to: destContract,
             body: body,
             timeout: defaultTimeout,
-            fee: feeTokenAmount, // Dispatcher fee in fee-token units
-            payer: msg.sender
+            fee: feeTokenAmount,
+            payer: swapped ? address(this) : msg.sender
         });
 
-        // Dispatch via Hyperbridge Host
-        // Dispatch via Hyperbridge Host with EXACT native fee
-        commitment = IDispatcher(host()).dispatch{value: nativeQuote}(request);
+        if (swapped) {
+            // Direct fee token payment
+            IERC20(feeToken).forceApprove(host(), feeTokenAmount);
+            commitment = IDispatcher(host()).dispatch{value: 0}(request);
+        } else {
+            // Tier 3: Uniswap V2 Fallback (Dispatcher internal swap)
+            commitment = IDispatcher(host()).dispatch{value: nativeQuote}(request);
+        }
 
         // Refund excess native tokens
         uint256 refund = msg.value - nativeQuote;
@@ -229,6 +304,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
 
         return commitment;
     }
+
 
     // ============ View Functions ============
 

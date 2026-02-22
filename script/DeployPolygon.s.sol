@@ -35,11 +35,13 @@ contract DeployPolygon is DeployCommon {
 
         // 1. Register additional tokens in Registry
         address usdc = config.bridgeToken; // Already registered in deploySystem
+        address idrx = vm.envOr("POLYGON_IDRX", address(0));
         address idrt = vm.envOr("POLYGON_IDRT", address(0));
         address usdt = vm.envOr("POLYGON_USDT", address(0));
         address weth = vm.envOr("POLYGON_WETH", address(0));
         address dai = vm.envOr("POLYGON_DAI", address(0));
 
+        if (idrx != address(0)) registry.setTokenSupport(idrx, true);
         if (idrt != address(0)) registry.setTokenSupport(idrt, true);
         if (usdt != address(0)) registry.setTokenSupport(usdt, true);
         if (weth != address(0)) registry.setTokenSupport(weth, true);
@@ -61,6 +63,10 @@ contract DeployPolygon is DeployCommon {
         if (idrt != address(0) && usdc != address(0)) {
             swapper.setV3Pool(idrt, usdc, 500); // Assuming 500 based on standard Polygon pools
             console.log("Configured IDRT/USDC V3 pool");
+        }
+        if (idrx != address(0) && usdc != address(0)) {
+            swapper.setV3Pool(idrx, usdc, 100);
+            console.log("Configured IDRX/USDC V3 pool");
         }
 
         vm.stopBroadcast();
