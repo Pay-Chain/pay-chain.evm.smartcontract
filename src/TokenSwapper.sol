@@ -542,11 +542,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(actions, actionParams);
 
-        try IUniversalRouter(universalRouter).execute(commands, inputs, block.timestamp + 600) {
-            amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
-        } catch {
-            revert NoRouteFound(); 
-        }
+        IUniversalRouter(universalRouter).execute(commands, inputs, block.timestamp + 600);
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
     }
 
     function _executeV3Swap(
@@ -670,11 +667,8 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(actions, actionParams);
 
-        try IUniversalRouter(universalRouter).execute(commands, inputs, block.timestamp + 600) {
-            amountOut = IERC20(path[pathLength-1]).balanceOf(address(this)) - balanceBefore;
-        } catch {
-            revert NoRouteFound();
-        }
+        IUniversalRouter(universalRouter).execute(commands, inputs, block.timestamp + 600);
+        amountOut = IERC20(path[pathLength-1]).balanceOf(address(this)) - balanceBefore;
     }
 
 
@@ -717,7 +711,7 @@ contract TokenSwapper is ISwapper, Ownable, ReentrancyGuard {
         uint256 amountIn
     ) internal pure returns (uint256 amountOut) {
         // Fallback to 1:1 quote to indicate a route exists.
-        // This allows fee estimation to proceed instead of failing or returning 0.
+        // This is a placeholder for simulation; actual execution will use real routes.
         return amountIn;
     }
 }

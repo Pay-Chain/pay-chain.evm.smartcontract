@@ -28,6 +28,7 @@ contract RedeployHyperbridgeSender is Script {
         address universalRouter = vm.envOr("BASE_UNIVERSAL_ROUTER", address(0));
         address bridgeToken = vm.envOr("BASE_USDC", address(0));
         address quoterV3 = 0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a;
+        address swapRouterV3 = 0x2626664c2603336E57B271c5C0b26F421741e481;
         address hbHost = vm.envOr("BASE_HYPERBRIDGE_HOST", address(0));
 
         vm.startBroadcast(deployerPrivateKey);
@@ -40,6 +41,7 @@ contract RedeployHyperbridgeSender is Script {
         );
         newSwapper.setVault(vault);
         newSwapper.setQuoterV3(quoterV3);
+        newSwapper.setV3Router(swapRouterV3);
         console.log("New TokenSwapper deployed at:", address(newSwapper));
 
         // 2. Authorize Components on New Swapper

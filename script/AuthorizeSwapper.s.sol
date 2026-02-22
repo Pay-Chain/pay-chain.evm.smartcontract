@@ -10,7 +10,7 @@ contract AuthorizeSwapper is Script {
 
         // Addresses on Base Mainnet
         address vault = 0xe3Be18b812b0645674cCa81f24dC5f7bD62911b7;
-        address swapper = 0x1B5Ac8f181C5e19fd45370b97bcC2B0A3390f099;
+        address swapper = 0x6E331897BCa189678cd60E966F1b1c94517E946E;
 
         vm.startBroadcast(deployerPrivateKey);
 
