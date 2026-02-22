@@ -6,7 +6,8 @@
 	deploy-base-dry deploy-bsc-dry deploy-arbitrum-dry deploy-polygon-dry \
 	deploy-base deploy-bsc deploy-arbitrum deploy-polygon \
 	deploy-base-verify deploy-bsc-verify deploy-arbitrum-verify deploy-polygon-verify \
-	rotate-hb-dry rotate-hb
+	rotate-hb-dry rotate-hb \
+	redeploy-gateway-v2-dry redeploy-gateway-v2
 
 VERBOSITY ?= -vvvv
 SLOW ?= --slow
@@ -40,6 +41,10 @@ help:
 	@echo "Hyperbridge sender rotation (minimal redeploy):"
 	@echo "  make rotate-hb-dry"
 	@echo "  make rotate-hb"
+	@echo ""
+	@echo "Gateway V2 redeploy (keep router/adapters):"
+	@echo "  make redeploy-gateway-v2-dry"
+	@echo "  make redeploy-gateway-v2"
 
 env-check:
 	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
@@ -166,6 +171,34 @@ rotate-hb:
 	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
 	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
 	@forge script script/RotateHyperbridgeSender.s.sol:RotateHyperbridgeSender \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		--broadcast \
+		--verify \
+		--etherscan-api-key $(BASESCAN_API_KEY) \
+		$(VERBOSITY) $(SLOW)
+
+redeploy-gateway-v2-dry:
+	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
+	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
+	@test -n "$(GATEWAY_V2_VAULT)" || (echo "Missing GATEWAY_V2_VAULT" && exit 1)
+	@test -n "$(GATEWAY_V2_ROUTER)" || (echo "Missing GATEWAY_V2_ROUTER" && exit 1)
+	@test -n "$(GATEWAY_V2_TOKEN_REGISTRY)" || (echo "Missing GATEWAY_V2_TOKEN_REGISTRY" && exit 1)
+	@test -n "$(GATEWAY_V2_FEE_RECIPIENT)" || (echo "Missing GATEWAY_V2_FEE_RECIPIENT" && exit 1)
+	@forge script script/RedeployPayChainGatewayV2.s.sol:RedeployPayChainGatewayV2 \
+		--rpc-url $(BASE_RPC_URL) \
+		--private-key $(PRIVATE_KEY) \
+		$(VERBOSITY)
+
+redeploy-gateway-v2:
+	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)
+	@test -n "$(BASE_RPC_URL)" || (echo "Missing BASE_RPC_URL" && exit 1)
+	@test -n "$(BASESCAN_API_KEY)" || (echo "Missing BASESCAN_API_KEY" && exit 1)
+	@test -n "$(GATEWAY_V2_VAULT)" || (echo "Missing GATEWAY_V2_VAULT" && exit 1)
+	@test -n "$(GATEWAY_V2_ROUTER)" || (echo "Missing GATEWAY_V2_ROUTER" && exit 1)
+	@test -n "$(GATEWAY_V2_TOKEN_REGISTRY)" || (echo "Missing GATEWAY_V2_TOKEN_REGISTRY" && exit 1)
+	@test -n "$(GATEWAY_V2_FEE_RECIPIENT)" || (echo "Missing GATEWAY_V2_FEE_RECIPIENT" && exit 1)
+	@forge script script/RedeployPayChainGatewayV2.s.sol:RedeployPayChainGatewayV2 \
 		--rpc-url $(BASE_RPC_URL) \
 		--private-key $(PRIVATE_KEY) \
 		--broadcast \

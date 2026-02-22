@@ -580,4 +580,147 @@ contract PayChainGatewayTest is Test {
         gateway.retryMessage(lastMessageId);
         vm.stopPrank();
     }
+
+    function testQuotePaymentCostSameChainReturnsNoBridgeFee() public {
+        string memory sameChain = string.concat("eip155:", vm.toString(block.chainid));
+        (
+            uint256 platformFee,
+            uint256 bridgeFeeNative,
+            uint256 totalSourceTokenRequired,
+            uint8 bridgeType,
+            bool isSameChain,
+            bool bridgeQuoteOk,
+            string memory bridgeQuoteReason
+        ) = gateway.quotePaymentCost(
+            bytes(sameChain),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18,
+            0
+        );
+
+        assertTrue(isSameChain);
+        assertEq(bridgeType, 255);
+        assertTrue(bridgeQuoteOk);
+        assertEq(bytes(bridgeQuoteReason).length, 0);
+        assertEq(bridgeFeeNative, 0);
+        assertEq(totalSourceTokenRequired, 100 * 10**18 + platformFee);
+    }
+
+    function testQuotePaymentCostTokenBridgeModeRejectsCrossToken() public {
+        vm.prank(router.owner());
+        router.setBridgeMode(1, PayChainRouter.BridgeMode.TOKEN_BRIDGE);
+
+        (
+            uint256 platformFee,
+            uint256 bridgeFeeNative,
+            uint256 totalSourceTokenRequired,
+            uint8 bridgeType,
+            bool isSameChain,
+            bool bridgeQuoteOk,
+            string memory bridgeQuoteReason
+        ) = gateway.quotePaymentCost(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(0x1234),
+            100 * 10**18,
+            0
+        );
+
+        assertFalse(isSameChain);
+        assertEq(bridgeType, 1);
+        assertFalse(bridgeQuoteOk);
+        assertEq(bridgeQuoteReason, "TOKEN_BRIDGE requires same token");
+        assertEq(bridgeFeeNative, 0);
+        assertEq(totalSourceTokenRequired, 100 * 10**18 + platformFee);
+    }
+
+    function testTrackBPerBytePolicyChangesQuotedPlatformFee() public {
+        uint256 amount = 100 * 10**18;
+        (
+            uint256 legacyPlatformFee,
+            uint256 legacyBridgeFeeNative,
+            uint256 legacyTotalSourceTokenRequired,
+            uint8 legacyBridgeType,
+            bool legacyIsSameChain,
+            bool legacyBridgeQuoteOk,
+            string memory legacyBridgeQuoteReason
+        ) = gateway.quotePaymentCost(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            amount,
+            0
+        );
+
+        // payloadLength = 6 + 32 + 20 + 20 + 32 + 32 = 142
+        // fee = (142 + 100) * 1_000_000 = 242_000_000
+        vm.prank(gateway.owner());
+        gateway.setPlatformFeePolicy(true, 1_000_000, 100, 0, 0);
+
+        (
+            uint256 perBytePlatformFee,
+            uint256 perByteBridgeFeeNative,
+            uint256 perByteTotalSourceTokenRequired,
+            uint8 perByteBridgeType,
+            bool perByteIsSameChain,
+            bool perByteBridgeQuoteOk,
+            string memory perByteBridgeQuoteReason
+        ) = gateway.quotePaymentCost(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            amount,
+            0
+        );
+
+        assertEq(perBytePlatformFee, 242_000_000);
+        assertTrue(perBytePlatformFee > legacyPlatformFee);
+        // Silence unused local warnings while still asserting quote path is healthy.
+        assertEq(legacyBridgeFeeNative, 0);
+        assertEq(perByteBridgeFeeNative, 0);
+        assertTrue(legacyTotalSourceTokenRequired > amount);
+        assertTrue(perByteTotalSourceTokenRequired > amount);
+        assertEq(legacyBridgeType, 1);
+        assertEq(perByteBridgeType, 1);
+        assertFalse(legacyIsSameChain);
+        assertFalse(perByteIsSameChain);
+        assertTrue(legacyBridgeQuoteOk);
+        assertTrue(perByteBridgeQuoteOk);
+        assertEq(bytes(legacyBridgeQuoteReason).length, 0);
+        assertEq(bytes(perByteBridgeQuoteReason).length, 0);
+    }
+
+    function testCreatePaymentStoresTrackBCostSnapshot() public {
+        vm.prank(gateway.owner());
+        gateway.setPlatformFeePolicy(true, 1_000_000, 100, 0, 0);
+
+        vm.startPrank(user);
+        token.approve(address(vault), 100 * 10**18 + 242_000_000);
+
+        bytes32 pid = gateway.createPayment(
+            bytes(DEST_CHAIN),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+
+        (
+            uint256 platformFeeToken,
+            uint256 bridgeFeeNative,
+            uint256 bridgeFeeTokenEq,
+            uint256 totalSourceTokenRequired
+        ) = gateway.paymentCostSnapshots(pid);
+
+        assertEq(platformFeeToken, 242_000_000);
+        assertEq(bridgeFeeNative, 0);
+        assertEq(bridgeFeeTokenEq, 0);
+        assertEq(totalSourceTokenRequired, 100 * 10**18 + 242_000_000);
+    }
 }

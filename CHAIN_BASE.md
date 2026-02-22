@@ -7,7 +7,7 @@ TokenSwapper deployed at: 0x6E331897BCa189678cd60E966F1b1c94517E946E (V3 - Suppo
 -> Correct Checksummed Address for Viem: 0x6E331897BCa189678cd60E966F1b1c94517E946E
 CCIPSender deployed at: 0xc60b6f567562c756bE5E29f31318bb7793852850
 CCIPReceiverAdapter deployed at: 0x95C8aF513D4a898B125A3EE4a34979ef127Ef1c1
-HyperbridgeSender deployed at: 0x919470da245322256534251450b1D0952a1B3e08 (Verified)
+HyperbridgeSender deployed at: 0x6709C0dF1a2a015B3C34d6C7a04a185fbAc4740a (Verified)
 HyperbridgeReceiver deployed at: 0xf4348E2e6AF1860ea9Ab0F3854149582b608b5e2
 LayerZeroSenderAdapter deployed at: 0xD37f7315ea96eD6b3539dFc4bc87368D9F2b7478
 LayerZeroReceiverAdapter deployed at: 0x4864138d5Dc8a5bcFd4228D7F784D1F32859986f

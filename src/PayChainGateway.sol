@@ -59,6 +59,24 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     uint256 public constant REQUEST_EXPIRY_TIME = 15 minutes;
     uint8 public constant MAX_RETRY_ATTEMPTS = 3;
 
+    struct PlatformFeePolicy {
+        bool enabled;
+        uint256 perByteRate;
+        uint256 overheadBytes;
+        uint256 minFee;
+        uint256 maxFee;
+    }
+
+    struct PaymentCostSnapshot {
+        uint256 platformFeeToken;
+        uint256 bridgeFeeNative;
+        uint256 bridgeFeeTokenEq;
+        uint256 totalSourceTokenRequired;
+    }
+
+    PlatformFeePolicy public platformFeePolicy;
+    mapping(bytes32 => PaymentCostSnapshot) public paymentCostSnapshots;
+
     // ============ Events ============
     
     event VaultUpdated(address indexed oldVault, address indexed newVault);
@@ -69,6 +87,22 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     event MessageRoutingLockUpdated(bool locked);
     event RouteFailed(bytes32 indexed paymentId, bytes reason);
     event PaymentFailed(bytes32 indexed paymentId, string reason);
+    event PlatformFeePolicyUpdated(
+        bool enabled,
+        uint256 perByteRate,
+        uint256 overheadBytes,
+        uint256 minFee,
+        uint256 maxFee
+    );
+    event PlatformFeeCharged(bytes32 indexed paymentId, address indexed token, uint256 amount, address indexed recipient);
+    event BridgeFeeCharged(bytes32 indexed paymentId, uint8 bridgeType, uint256 nativeAmount, uint256 tokenEquivalent);
+    event PaymentCostSnapshotted(
+        bytes32 indexed paymentId,
+        uint256 platformFeeToken,
+        uint256 bridgeFeeNative,
+        uint256 bridgeFeeTokenEq,
+        uint256 totalSourceTokenRequired
+    );
 
     // ============ Diagnostics ============
 
@@ -127,6 +161,105 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
 
     function setAuthorizedAdapter(address adapter, bool authorized) external onlyOwner {
         isAuthorizedAdapter[adapter] = authorized;
+    }
+
+    function setPlatformFeePolicy(
+        bool enabled,
+        uint256 perByteRate,
+        uint256 overheadBytes,
+        uint256 minFee,
+        uint256 maxFee
+    ) external onlyOwner {
+        require(maxFee == 0 || minFee <= maxFee, "Invalid fee cap");
+        platformFeePolicy = PlatformFeePolicy({
+            enabled: enabled,
+            perByteRate: perByteRate,
+            overheadBytes: overheadBytes,
+            minFee: minFee,
+            maxFee: maxFee
+        });
+
+        emit PlatformFeePolicyUpdated(enabled, perByteRate, overheadBytes, minFee, maxFee);
+    }
+
+    function quotePaymentCost(
+        bytes calldata destChainIdBytes,
+        bytes calldata receiverBytes,
+        address sourceToken,
+        address destToken,
+        uint256 amount,
+        uint256 minAmountOut
+    )
+        external
+        view
+        returns (
+            uint256 platformFee,
+            uint256 bridgeFeeNative,
+            uint256 totalSourceTokenRequired,
+            uint8 bridgeType,
+            bool isSameChain,
+            bool bridgeQuoteOk,
+            string memory bridgeQuoteReason
+        )
+    {
+        require(amount > 0, "Amount must be > 0");
+        require(sourceToken != address(0), "Invalid source token");
+        require(destChainIdBytes.length > 0, "Empty dest chain ID");
+        require(receiverBytes.length > 0, "Empty receiver");
+
+        string memory destChainId = string(destChainIdBytes);
+        string memory sourceChainId = _getChainId();
+        isSameChain = keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId));
+
+        uint256 payloadLength = FeeCalculator.payloadLengthForPayment(
+            destChainIdBytes,
+            receiverBytes,
+            sourceToken,
+            destToken,
+            amount,
+            minAmountOut
+        );
+        platformFee = _calculatePlatformFee(amount, payloadLength);
+
+        bridgeType = 255;
+        bridgeQuoteOk = true;
+        bridgeQuoteReason = "";
+
+        if (!isSameChain) {
+            bridgeType = defaultBridgeTypes[destChainId];
+
+            if (
+                router.bridgeModes(bridgeType) == PayChainRouter.BridgeMode.TOKEN_BRIDGE &&
+                sourceToken != destToken
+            ) {
+                bridgeQuoteOk = false;
+                bridgeQuoteReason = "TOKEN_BRIDGE requires same token";
+                totalSourceTokenRequired = amount + platformFee;
+                return (
+                    platformFee,
+                    0,
+                    totalSourceTokenRequired,
+                    bridgeType,
+                    isSameChain,
+                    bridgeQuoteOk,
+                    bridgeQuoteReason
+                );
+            }
+
+            IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+                paymentId: bytes32(0),
+                receiver: abi.decode(receiverBytes, (address)),
+                sourceToken: sourceToken,
+                destToken: destToken,
+                amount: amount,
+                destChainId: destChainId,
+                minAmountOut: minAmountOut
+            });
+
+            (bridgeQuoteOk, bridgeFeeNative, bridgeQuoteReason) = router.quotePaymentFeeSafe(destChainId, bridgeType, message);
+        }
+
+        totalSourceTokenRequired = amount + platformFee;
     }
 
     // ============ Core: Cross-Chain Payment ============
@@ -197,7 +330,15 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         }
 
         // ========== Fee Calculation ==========
-        uint256 platformFee = amount.calculatePlatformFee(FIXED_BASE_FEE, FEE_RATE_BPS);
+        uint256 payloadLength = FeeCalculator.payloadLengthForPayment(
+            destChainIdBytes,
+            receiverBytes,
+            sourceToken,
+            destToken,
+            amount,
+            minAmountOut
+        );
+        uint256 platformFee = _calculatePlatformFee(amount, payloadLength);
         uint256 totalAmount = amount + platformFee;
 
         // ========== Token Transfer ==========
@@ -227,6 +368,18 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             status: isSameChain ? PaymentStatus.Completed : PaymentStatus.Processing,
             createdAt: block.timestamp
         });
+
+        paymentCostSnapshots[paymentId] = PaymentCostSnapshot({
+            platformFeeToken: platformFee,
+            bridgeFeeNative: isSameChain ? 0 : msg.value,
+            bridgeFeeTokenEq: 0,
+            totalSourceTokenRequired: totalAmount
+        });
+        emit PaymentCostSnapshotted(paymentId, platformFee, isSameChain ? 0 : msg.value, 0, totalAmount);
+        emit PlatformFeeCharged(paymentId, sourceToken, platformFee, feeRecipient);
+        if (!isSameChain) {
+            emit BridgeFeeCharged(paymentId, bridgeType, msg.value, 0);
+        }
 
         if (isSameChain) {
             uint256 settledAmount = amount;
@@ -415,7 +568,13 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         require(!request.isPaid, "Paid");
         require(block.timestamp <= request.expiresAt, "Expired");
 
-        uint256 platformFee = request.amount.calculatePlatformFee(FIXED_BASE_FEE, FEE_RATE_BPS);
+        uint256 payloadLength = abi.encode(
+            requestId,
+            request.receiver,
+            request.token,
+            request.amount
+        ).length;
+        uint256 platformFee = _calculatePlatformFee(request.amount, payloadLength);
         uint256 totalAmount = request.amount + platformFee;
 
         // Pull from payer
@@ -455,6 +614,20 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
     }
 
     // ============ Internal Helper ============
+
+    function _calculatePlatformFee(uint256 amount, uint256 payloadLength) internal view returns (uint256) {
+        if (platformFeePolicy.enabled) {
+            return FeeCalculator.calculatePerBytePlatformFee(
+                payloadLength,
+                platformFeePolicy.overheadBytes,
+                platformFeePolicy.perByteRate,
+                platformFeePolicy.minFee,
+                platformFeePolicy.maxFee
+            );
+        }
+
+        return amount.calculatePlatformFee(FIXED_BASE_FEE, FEE_RATE_BPS);
+    }
     
     function _getChainId() internal view returns (string memory) {
          return string(abi.encodePacked("eip155:", _uint2str(block.chainid)));

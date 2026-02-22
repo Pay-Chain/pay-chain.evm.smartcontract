@@ -47,4 +47,61 @@ library FeeCalculator {
             bridgeFee +
             gasFee;
     }
+
+    /**
+     * @notice Calculate canonical payload length used by Track-B per-byte platform fee.
+     * @dev This mirrors payment intent fields, not bridge-specific encoded payload bytes.
+     */
+    function payloadLengthForPayment(
+        bytes calldata destChainIdBytes,
+        bytes calldata receiverBytes,
+        address /* sourceToken */,
+        address /* destToken */,
+        uint256 /* amount */,
+        uint256 /* minAmountOut */
+    ) internal pure returns (uint256) {
+        return
+            destChainIdBytes.length +
+            receiverBytes.length +
+            20 + // sourceToken
+            20 + // destToken
+            32 + // amount
+            32; // minAmountOut
+    }
+
+    /**
+     * @notice Apply optional min/max cap to calculated fee.
+     * @param rawFee Base computed fee.
+     * @param minFee Lower bound (0 disables min bound).
+     * @param maxFee Upper bound (0 disables max bound).
+     */
+    function applyMinMaxCap(
+        uint256 rawFee,
+        uint256 minFee,
+        uint256 maxFee
+    ) internal pure returns (uint256) {
+        uint256 capped = rawFee;
+        if (minFee > 0 && capped < minFee) {
+            capped = minFee;
+        }
+        if (maxFee > 0 && capped > maxFee) {
+            capped = maxFee;
+        }
+        return capped;
+    }
+
+    /**
+     * @notice Calculate Track-B per-byte platform fee.
+     * @dev fee = (payloadLength + overheadBytes) * perByteRate, then min/max cap.
+     */
+    function calculatePerBytePlatformFee(
+        uint256 payloadLength,
+        uint256 overheadBytes,
+        uint256 perByteRate,
+        uint256 minFee,
+        uint256 maxFee
+    ) internal pure returns (uint256) {
+        uint256 rawFee = (payloadLength + overheadBytes) * perByteRate;
+        return applyMinMaxCap(rawFee, minFee, maxFee);
+    }
 }
