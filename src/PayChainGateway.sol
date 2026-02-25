@@ -253,7 +253,8 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
                 destToken: destToken,
                 amount: amount,
                 destChainId: destChainId,
-                minAmountOut: minAmountOut
+                minAmountOut: minAmountOut,
+                payer: address(0)
             });
 
             (bridgeQuoteOk, bridgeFeeNative, bridgeQuoteReason) = router.quotePaymentFeeSafe(destChainId, bridgeType, message);
@@ -421,7 +422,8 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
             destToken: destToken,
             amount: amount,
             destChainId: destChainId,
-            minAmountOut: minAmountOut
+            minAmountOut: minAmountOut,
+            payer: msg.sender
         });
 
         // S5: optional source-side swap before bridge routing.
@@ -693,6 +695,25 @@ contract PayChainGateway is IPayChainGateway, Ownable, ReentrancyGuard, Pausable
         // Return funds from Vault
         vault.pushTokens(payment.sourceToken, payment.sender, payment.amount);
         
+        emit PaymentRefunded(paymentId, payment.amount);
+    }
+
+    /// @notice Adapter-safe fail+refund path for timeout/failure callbacks
+    /// @dev Allows authorized adapters to atomically fail and refund a payment.
+    function adapterFailAndRefund(bytes32 paymentId, string calldata reason) external {
+        require(isAuthorizedAdapter[msg.sender], "Not authorized adapter");
+        Payment storage payment = payments[paymentId];
+        require(payment.sender != address(0), "Payment not found");
+        require(
+            payment.status == PaymentStatus.Processing || payment.status == PaymentStatus.Failed,
+            "Invalid payment status"
+        );
+
+        payment.status = PaymentStatus.Failed;
+        emit PaymentFailed(paymentId, reason);
+
+        payment.status = PaymentStatus.Refunded;
+        vault.pushTokens(payment.sourceToken, payment.sender, payment.amount);
         emit PaymentRefunded(paymentId, payment.amount);
     }
 

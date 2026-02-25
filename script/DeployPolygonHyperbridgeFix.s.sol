@@ -17,7 +17,7 @@ contract DeployPolygonHyperbridgeFix is Script {
         address quickSwapRouter = 0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff;
 
         // 1. Deploy new HyperbridgeSender
-        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway);
+        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway, routerAddress);
         console.log("New HyperbridgeSender deployed at:", address(newSender));
 
         // 2. Configure Swap Router override

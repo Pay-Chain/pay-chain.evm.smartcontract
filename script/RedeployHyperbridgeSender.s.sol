@@ -66,7 +66,8 @@ contract RedeployHyperbridgeSender is Script {
         HyperbridgeSender newSender = new HyperbridgeSender(
             vault,
             hbHost,
-            gateway
+            gateway,
+            router
         );
         console.log("New HyperbridgeSender deployed at:", address(newSender));
 

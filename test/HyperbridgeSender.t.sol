@@ -137,11 +137,8 @@ contract MockGateway {
     mapping(bytes32 => bool) public refundsProcessed;
     mapping(bytes32 => bool) public paymentsFailed;
 
-    function markPaymentFailed(bytes32 paymentId, string calldata /*reason*/) external {
+    function adapterFailAndRefund(bytes32 paymentId, string calldata /*reason*/) external {
         paymentsFailed[paymentId] = true;
-    }
-
-    function processRefund(bytes32 paymentId) external {
         refundsProcessed[paymentId] = true;
     }
 }
@@ -161,7 +158,7 @@ contract HyperbridgeSenderTest is Test {
         vault = new MockVault(address(token));
         host = new MockHost();
         gateway = new MockGateway();
-        sender = new HyperbridgeSender(address(vault), address(host), address(gateway));
+        sender = new HyperbridgeSender(address(vault), address(host), address(gateway), address(this));
         
         weth = new MockWETH();
         router = new MockRouter(address(weth));
@@ -193,7 +190,25 @@ contract HyperbridgeSenderTest is Test {
         assertEq(stored, validDest);
     }
 
-    function test_SendMessage_RefundsExcess() public {
+    function test_SendMessage_RevertIfNotRouter() public {
+        IBridgeAdapter.BridgeMessage memory bridgeMsg = IBridgeAdapter.BridgeMessage({
+            paymentId: bytes32(uint256(11)),
+            receiver: address(0x123),
+            sourceToken: address(0),
+            destToken: address(0),
+            amount: 100,
+            destChainId: "EVM-2",
+            minAmountOut: 0,
+            payer: address(this)
+        });
+
+        vm.deal(address(0xdead), 1 ether);
+        vm.prank(address(0xdead));
+        vm.expectRevert(HyperbridgeSender.NotRouter.selector);
+        sender.sendMessage{value: 1}(bridgeMsg);
+    }
+
+    function test_SendMessage_UsesFullMsgValueWithoutSilentRefund() public {
         address validAddr = address(0x123);
         bytes memory validDest = abi.encodePacked(validAddr);
         sender.setDestinationContract("EVM-2", validDest);
@@ -208,7 +223,8 @@ contract HyperbridgeSenderTest is Test {
             destToken: address(0),
             amount: 100,
             destChainId: "EVM-2",
-            minAmountOut: 0
+            minAmountOut: 0,
+            payer: address(this)
         });
 
         // Calculate expected fee approximate
@@ -226,14 +242,9 @@ contract HyperbridgeSenderTest is Test {
         
         uint256 balanceAfter = address(this).balance;
         
-        // Expect balance to decrease by strictly quotedFee (plus gas, but logic is simplified in test environment if we don't track gas)
-        // Actually forge test calls preserve balance unless spent?
-        // Wait, 'address(this)' is the test contract.
-        // It sends 'sentValue'.
-        // It should receive 'sentValue - quotedFee' back.
-        // So net cost should be 'quotedFee'.
-        
-        assertEq(balanceBefore - balanceAfter, quotedFee, "Should only pay quoted fee");
+        // Phase-4: adapter no longer does best-effort excess refund to caller.
+        // Entire msg.value is forwarded to dispatcher fallback path when swapper path is not used.
+        assertEq(balanceBefore - balanceAfter, sentValue, "Should consume full provided native");
     }
 
     function test_OnPostRequestTimeout_TriggersRefund() public {
@@ -279,7 +290,8 @@ contract HyperbridgeSenderTest is Test {
             destToken: address(0),
             amount: 100,
             destChainId: "EVM-2",
-            minAmountOut: 0
+            minAmountOut: 0,
+            payer: address(this)
         });
 
         uint256 quotedFee = sender.quoteFee(bridgeMsg);
@@ -312,7 +324,8 @@ contract HyperbridgeSenderTest is Test {
             destToken: address(0),
             amount: 100,
             destChainId: "EVM-2",
-            minAmountOut: 0
+            minAmountOut: 0,
+            payer: address(this)
         });
 
         uint256 quotedFee = sender.quoteFee(bridgeMsg);

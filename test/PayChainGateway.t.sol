@@ -6,6 +6,7 @@ import "../src/PayChainGateway.sol";
 import "../src/interfaces/IPayChainGateway.sol";
 import "../src/PayChainRouter.sol";
 import "../src/vaults/PayChainVault.sol";
+import "../src/interfaces/IBridgeAdapter.sol";
 import "../src/integrations/ccip/CCIPSender.sol";
 import "../src/integrations/ccip/CCIPReceiver.sol";
 import "../src/integrations/ccip/Client.sol";
@@ -48,9 +49,23 @@ contract MockVaultSwapper {
 // Mock CCIP Router - implements IRouterClient interface
 contract MockCCIPRouter {
     event CCIPMessageSent(uint64 destChainId, address receiver, uint256 tokenAmount);
+    uint256 public quotedFee;
+    bool public chainSupported = true;
     
-    function getFee(uint64, Client.EVM2AnyMessage memory) external pure returns (uint256) {
-        return 0; // Free for mock
+    function getFee(uint64, Client.EVM2AnyMessage calldata) external view returns (uint256) {
+        return quotedFee;
+    }
+
+    function setQuotedFee(uint256 fee) external {
+        quotedFee = fee;
+    }
+
+    function setChainSupported(bool supported) external {
+        chainSupported = supported;
+    }
+
+    function isChainSupported(uint64) external view returns (bool) {
+        return chainSupported;
     }
     
     function ccipSend(uint64 destChainSelector, Client.EVM2AnyMessage calldata message) external payable returns (bytes32) {
@@ -58,6 +73,26 @@ contract MockCCIPRouter {
         uint256 amount = message.tokenAmounts.length > 0 ? message.tokenAmounts[0].amount : 0;
         emit CCIPMessageSent(destChainSelector, receiver, amount);
         return keccak256(abi.encodePacked(destChainSelector, block.timestamp, msg.sender));
+    }
+}
+
+contract MockNoopAdapter is IBridgeAdapter {
+    function sendMessage(BridgeMessage calldata message) external payable returns (bytes32 messageId) {
+        return keccak256(abi.encode(message.paymentId, message.destChainId, message.amount, block.number));
+    }
+
+    function quoteFee(BridgeMessage calldata) external pure returns (uint256 fee) {
+        return 0;
+    }
+
+    function isRouteConfigured(string calldata) external pure returns (bool) {
+        return true;
+    }
+
+    function getRouteConfig(
+        string calldata
+    ) external pure returns (bool configured, bytes memory configA, bytes memory configB) {
+        return (true, bytes("noop"), bytes(""));
     }
 }
 
@@ -70,6 +105,7 @@ contract PayChainGatewayTest is Test {
     TokenRegistry tokenRegistry;
     MockERC20 token;
     MockCCIPRouter ccipRouterMock;
+    MockNoopAdapter noopAdapter;
 
     address user = address(1);
     address merchant = address(2);
@@ -107,6 +143,7 @@ contract PayChainGatewayTest is Test {
         
         // 3. Deploy Mocks
         ccipRouterMock = new MockCCIPRouter();
+        noopAdapter = new MockNoopAdapter();
         
         // 4. Deploy Adapters
         ccipSender = new CCIPSender(address(vault), address(ccipRouterMock));
@@ -131,6 +168,7 @@ contract PayChainGatewayTest is Test {
         vault.setAuthorizedSpender(address(ccipReceiver), true);
         
         // CCIP Sender Config
+        ccipSender.setAuthorizedCaller(address(router), true);
         ccipSender.setChainSelector(DEST_CHAIN, CCIP_DEST_SELECTOR);
         ccipSender.setDestinationAdapter(DEST_CHAIN, abi.encode(address(ccipReceiver))); // Should be receiver on dest, but for logic check ok.
         
@@ -187,6 +225,171 @@ contract PayChainGatewayTest is Test {
         assertEq(token.balanceOf(address(ccipSender)), 100 * 10**18);
         
         vm.stopPrank();
+    }
+
+    function testCCIPSenderRejectsUnauthorizedDirectCaller() public {
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-unauthorized"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: 1e18,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(CCIPSender.UnauthorizedCaller.selector, address(this)));
+        ccipSender.sendMessage(message);
+    }
+
+    function testCCIPSenderRevertsWhenNativeFeeUnderpaid() public {
+        ccipRouterMock.setQuotedFee(1e14);
+
+        uint256 amount = 1e18;
+        require(token.transfer(address(vault), amount), "fund vault failed");
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-underpaid"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: amount,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.deal(address(router), 1 ether);
+        vm.prank(address(router));
+        vm.expectRevert(abi.encodeWithSelector(CCIPSender.InsufficientNativeFee.selector, 5e13, 1e14));
+        ccipSender.sendMessage{value: 5e13}(message);
+    }
+
+    function testCCIPSenderRefundsExcessNativeFeeToPayer() public {
+        ccipRouterMock.setQuotedFee(1e14);
+
+        uint256 amount = 1e18;
+        require(token.transfer(address(vault), amount), "fund vault failed");
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-refund"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: amount,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        uint256 payerBefore = user.balance;
+        vm.deal(address(router), 1 ether);
+        vm.prank(address(router));
+        ccipSender.sendMessage{value: 3e14}(message);
+
+        assertEq(user.balance, payerBefore + 2e14, "excess native fee should be refunded to payer");
+    }
+
+    function testCCIPSenderRevertsWhenDestinationChainNotSupported() public {
+        ccipRouterMock.setChainSupported(false);
+
+        uint256 amount = 1e18;
+        require(token.transfer(address(vault), amount), "fund vault failed");
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-chain-unsupported"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: amount,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.prank(address(router));
+        vm.expectRevert(abi.encodeWithSelector(CCIPSender.DestinationChainNotSupported.selector, CCIP_DEST_SELECTOR));
+        ccipSender.sendMessage(message);
+    }
+
+    function testCCIPSenderRevertsWhenMsgValueProvidedForFeeTokenRoute() public {
+        ccipRouterMock.setQuotedFee(1e14);
+        ccipSender.setDestinationFeeToken(DEST_CHAIN, address(token));
+
+        uint256 amount = 1e18;
+        require(token.transfer(address(vault), amount), "fund vault failed");
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-invalid-msgvalue"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: amount,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.deal(address(router), 1 ether);
+        vm.prank(address(router));
+        vm.expectRevert(abi.encodeWithSelector(CCIPSender.InvalidMsgValueForFeeToken.selector, 1));
+        ccipSender.sendMessage{value: 1}(message);
+    }
+
+    function testCCIPSenderFeeTokenRouteWithoutMsgValueSucceeds() public {
+        uint256 feeTokenAmount = 1e16;
+        ccipRouterMock.setQuotedFee(feeTokenAmount);
+        vm.prank(ccipSender.owner());
+        ccipSender.setDestinationFeeToken(DEST_CHAIN, address(token));
+
+        uint256 amount = 1e18;
+        vm.prank(user);
+        require(token.transfer(address(vault), amount + feeTokenAmount), "fund vault failed");
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-fee-token-success"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: amount,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.prank(address(router));
+        bytes32 messageId = ccipSender.sendMessage(message);
+        assertTrue(messageId != bytes32(0));
+        assertEq(token.balanceOf(address(ccipSender)), amount);
+    }
+
+    function testCCIPSenderQuoteFeeRevertsWhenDestinationChainNotSupported() public {
+        ccipRouterMock.setChainSupported(false);
+
+        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
+            paymentId: keccak256("pid-quote-chain-unsupported"),
+            receiver: merchant,
+            sourceToken: address(token),
+            destToken: address(token),
+            amount: 1e18,
+            destChainId: DEST_CHAIN,
+            minAmountOut: 0,
+            payer: user
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(CCIPSender.DestinationChainNotSupported.selector, CCIP_DEST_SELECTOR));
+        ccipSender.quoteFee(message);
+    }
+
+    function testCCIPSenderSetDestinationExtraArgsStoresPerRoute() public {
+        bytes memory options = hex"00030100110100000000000000000000000000030d40";
+
+        vm.prank(ccipSender.owner());
+        ccipSender.setDestinationExtraArgs(DEST_CHAIN, options);
+        bytes memory stored = ccipSender.destinationExtraArgs(DEST_CHAIN);
+
+        assertEq(stored, options);
     }
 
     function testCreatePaymentWithSlippage() public {
@@ -722,5 +925,49 @@ contract PayChainGatewayTest is Test {
         assertEq(bridgeFeeNative, 0);
         assertEq(bridgeFeeTokenEq, 0);
         assertEq(totalSourceTokenRequired, 100 * 10**18 + 242_000_000);
+    }
+
+    function testAdapterFailAndRefundAuthorizedAdapter() public {
+        string memory noopDest = "eip155:42161";
+
+        vm.startPrank(router.owner());
+        router.registerAdapter(noopDest, 0, address(noopAdapter));
+        vm.stopPrank();
+
+        vm.startPrank(gateway.owner());
+        gateway.setDefaultBridgeType(noopDest, 0);
+        gateway.setAuthorizedAdapter(address(noopAdapter), true);
+        vm.stopPrank();
+
+        uint256 userBalanceBefore = token.balanceOf(user);
+
+        vm.startPrank(user);
+        token.approve(address(vault), 101 * 10**18);
+        bytes32 pid = gateway.createPayment(
+            bytes(noopDest),
+            abi.encode(merchant),
+            address(token),
+            address(token),
+            100 * 10**18
+        );
+        vm.stopPrank();
+
+        IPayChainGateway.Payment memory payment = gateway.getPayment(pid);
+        assertEq(uint256(payment.status), uint256(IPayChainGateway.PaymentStatus.Processing));
+
+        vm.prank(address(noopAdapter));
+        gateway.adapterFailAndRefund(pid, "HYPERBRIDGE_TIMEOUT");
+
+        IPayChainGateway.Payment memory afterPayment = gateway.getPayment(pid);
+        assertEq(uint256(afterPayment.status), uint256(IPayChainGateway.PaymentStatus.Refunded));
+
+        // Platform fee is non-refundable; amount is refunded.
+        assertEq(token.balanceOf(user), userBalanceBefore - payment.fee);
+    }
+
+    function testAdapterFailAndRefundRevertUnauthorized() public {
+        vm.prank(stranger);
+        vm.expectRevert(bytes("Not authorized adapter"));
+        gateway.adapterFailAndRefund(bytes32(uint256(1)), "nope");
     }
 }

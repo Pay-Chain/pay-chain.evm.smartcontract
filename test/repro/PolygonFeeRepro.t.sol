@@ -22,7 +22,8 @@ contract PolygonFeeRepro is Test {
             destToken: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, // Base USDC
             amount: 1000000,
             destChainId: destChainId,
-            minAmountOut: 0
+            minAmountOut: 0,
+            payer: address(this)
         });
 
         uint256 fee = router.quotePaymentFee(destChainId, bridgeType, message);

@@ -134,6 +134,9 @@ contract MockLZEndpoint is ILayerZeroEndpointV2 {
     uint256 public quoteLzFee;
     bytes32 public lastGuid;
     uint64 public nonce;
+    address public lastRefundAddress;
+    address public lastDelegate;
+    uint256 public delegateCalls;
 
     function setQuoteNativeFee(uint256 fee) external {
         quoteNativeFee = fee;
@@ -145,9 +148,10 @@ contract MockLZEndpoint is ILayerZeroEndpointV2 {
 
     function send(
         MessagingParams calldata params,
-        address
+        address refundAddress
     ) external payable returns (MessagingReceipt memory) {
         nonce += 1;
+        lastRefundAddress = refundAddress;
         lastGuid = keccak256(abi.encode(params.dstEid, params.receiver, params.message, nonce, msg.value));
         return MessagingReceipt({
             guid: lastGuid,
@@ -156,7 +160,10 @@ contract MockLZEndpoint is ILayerZeroEndpointV2 {
         });
     }
 
-    function setDelegate(address) external {}
+    function setDelegate(address delegate_) external {
+        delegateCalls += 1;
+        lastDelegate = delegate_;
+    }
 }
 
 contract BridgeAdaptersTest is Test {
@@ -173,7 +180,8 @@ contract BridgeAdaptersTest is Test {
             destToken: destToken,
             amount: 1000,
             destChainId: DEST_CAIP2,
-            minAmountOut: 900
+            minAmountOut: 900,
+            payer: address(0xCAFE)
         });
     }
 
@@ -182,7 +190,7 @@ contract BridgeAdaptersTest is Test {
         MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 3);
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 2);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
 
         sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
         sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
@@ -193,13 +201,14 @@ contract BridgeAdaptersTest is Test {
         assertTrue(quotedNative > 0);
         assertTrue(quotedFeeToken > 0);
 
-        vm.expectRevert();
+        // Phase-4: sender no longer requotes and rejects by quoted amount at runtime.
+        // Any positive msg.value is forwarded to dispatcher fallback path.
         sender.sendMessage{value: quotedNative - 1}(m);
 
         bytes32 messageId = sender.sendMessage{value: quotedNative}(m);
         assertTrue(messageId != bytes32(0));
         assertEq(dispatcher.lastNativeValue(), quotedNative);
-        assertEq(dispatcher.lastPayer(), address(this));
+        assertEq(dispatcher.lastPayer(), m.payer);
         // request.fee maps to relayer tip; default tip is zero.
         assertEq(dispatcher.lastFeeTokenAmount(), 0);
     }
@@ -211,7 +220,7 @@ contract BridgeAdaptersTest is Test {
         // perByte = 2
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 2);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
 
         sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
         sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
@@ -234,7 +243,7 @@ contract BridgeAdaptersTest is Test {
         MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 2);
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 2);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
 
         sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
         sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
@@ -258,7 +267,7 @@ contract BridgeAdaptersTest is Test {
         MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 2);
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 1);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
 
         assertFalse(sender.isRouteConfigured(DEST_CAIP2));
 
@@ -273,7 +282,7 @@ contract BridgeAdaptersTest is Test {
         MockToken feeToken = new MockToken();
         MockHyperbridgeDispatcherNoRouter dispatcher = new MockHyperbridgeDispatcherNoRouter(address(feeToken), 2);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
 
         sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
         sender.setDestinationContract(DEST_CAIP2, hex"1111111111111111111111111111111111111111");
@@ -288,7 +297,7 @@ contract BridgeAdaptersTest is Test {
         MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 2);
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 1);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
         PayChainRouter router = new PayChainRouter();
 
         router.registerAdapter(DEST_CAIP2, 0, address(sender));
@@ -305,7 +314,7 @@ contract BridgeAdaptersTest is Test {
         MockHBUniswapRouter uni = new MockHBUniswapRouter(address(0xEeee), 2);
         MockHyperbridgeDispatcher dispatcher = new MockHyperbridgeDispatcher(address(feeToken), address(uni), 1);
         PayChainVault vault = new PayChainVault();
-        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault));
+        HyperbridgeSender sender = new HyperbridgeSender(address(vault), address(dispatcher), address(vault), address(this));
         PayChainRouter router = new PayChainRouter();
 
         sender.setStateMachineId(DEST_CAIP2, hex"45564d2d3432313631");
@@ -321,10 +330,13 @@ contract BridgeAdaptersTest is Test {
 
     function testLayerZeroSenderQuoteAndSend() public {
         MockLZEndpoint endpoint = new MockLZEndpoint();
-        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint));
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
 
         sender.setRoute(DEST_CAIP2, 30110, bytes32(uint256(uint160(address(0xCAFE)))));
-        sender.setEnforcedOptions(DEST_CAIP2, hex"0001");
+        sender.setEnforcedOptions(
+            DEST_CAIP2,
+            hex"00030100110100000000000000000000000000030d40"
+        );
 
         MockToken token = new MockToken();
         IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(token), address(token));
@@ -336,11 +348,45 @@ contract BridgeAdaptersTest is Test {
 
         bytes32 guid = sender.sendMessage{value: quotedNative}(m);
         assertEq(guid, endpoint.lastGuid());
+        assertEq(endpoint.lastRefundAddress(), m.payer);
+    }
+
+    function testLayerZeroSenderRefundFallbackToOwnerWhenPayerZero() public {
+        MockLZEndpoint endpoint = new MockLZEndpoint();
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
+        sender.setRoute(DEST_CAIP2, 30110, bytes32(uint256(uint160(address(0xCAFE)))));
+
+        MockToken token = new MockToken();
+        IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(token), address(token));
+        m.payer = address(0);
+
+        uint256 quotedNative = sender.quoteFee(m);
+        sender.sendMessage{value: quotedNative}(m);
+
+        assertEq(endpoint.lastRefundAddress(), address(this));
+    }
+
+    function testLayerZeroSenderRegisterDelegate() public {
+        MockLZEndpoint endpoint = new MockLZEndpoint();
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
+
+        sender.registerDelegate();
+
+        assertEq(endpoint.delegateCalls(), 1);
+        assertEq(endpoint.lastDelegate(), address(this));
+    }
+
+    function testLayerZeroSenderSetEnforcedOptionsRejectsNonType3() public {
+        MockLZEndpoint endpoint = new MockLZEndpoint();
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
+
+        vm.expectRevert();
+        sender.setEnforcedOptions(DEST_CAIP2, hex"0001");
     }
 
     function testLayerZeroSenderRevertsWhenRouteMissing() public {
         MockLZEndpoint endpoint = new MockLZEndpoint();
-        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint));
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
 
         MockToken token = new MockToken();
         IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(token), address(token));
@@ -350,6 +396,22 @@ contract BridgeAdaptersTest is Test {
 
         vm.expectRevert();
         sender.sendMessage{value: 1}(m);
+    }
+
+    function testLayerZeroSenderRevertsIfCallerIsNotRouter() public {
+        MockLZEndpoint endpoint = new MockLZEndpoint();
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
+        LayerZeroSenderAdapter senderWithOtherRouter = new LayerZeroSenderAdapter(address(endpoint), address(0x1234));
+
+        sender.setRoute(DEST_CAIP2, 30110, bytes32(uint256(uint160(address(0xCAFE)))));
+        senderWithOtherRouter.setRoute(DEST_CAIP2, 30110, bytes32(uint256(uint160(address(0xCAFE)))));
+
+        MockToken token = new MockToken();
+        IBridgeAdapter.BridgeMessage memory m = _buildMessage(address(token), address(token));
+        uint256 quotedNative = senderWithOtherRouter.quoteFee(m);
+
+        vm.expectRevert();
+        senderWithOtherRouter.sendMessage{value: quotedNative}(m);
     }
 
     function testLayerZeroReceiverAcceptsTrustedMessageAndReleasesFunds() public {
@@ -403,8 +465,44 @@ contract BridgeAdaptersTest is Test {
         });
 
         vm.prank(address(endpoint));
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LayerZeroReceiverAdapter.UntrustedPeer.selector,
+                uint32(30111),
+                bytes32(uint256(uint160(address(0xDCBA)))),
+                bytes32(uint256(uint160(address(0xABCD))))
+            )
+        );
         receiver.lzReceive(origin, keccak256("guid"), abi.encode(bytes32(0), uint256(0), address(0), address(0), uint256(0)), address(0), bytes(""));
+    }
+
+    function testLayerZeroReceiverGetPathState() public {
+        MockLZEndpoint endpoint = new MockLZEndpoint();
+        PayChainVault vault = new PayChainVault();
+        PayChainRouter router = new PayChainRouter();
+        TokenRegistry registry = new TokenRegistry();
+        PayChainGateway gateway = new PayChainGateway(address(vault), address(router), address(registry), address(this));
+        LayerZeroReceiverAdapter receiver = new LayerZeroReceiverAdapter(address(endpoint), address(gateway), address(vault));
+
+        uint32 srcEid = 30111;
+        bytes32 peer = bytes32(uint256(uint160(address(0xABCD))));
+
+        (bool peerConfigured0, bool trusted0, bytes32 configuredPeer0, uint64 expectedNonce0) = receiver.getPathState(
+            srcEid, peer
+        );
+        assertFalse(peerConfigured0);
+        assertFalse(trusted0);
+        assertEq(configuredPeer0, bytes32(0));
+        assertEq(expectedNonce0, 0);
+
+        receiver.setPeer(srcEid, peer);
+        (bool peerConfigured1, bool trusted1, bytes32 configuredPeer1, uint64 expectedNonce1) = receiver.getPathState(
+            srcEid, peer
+        );
+        assertTrue(peerConfigured1);
+        assertTrue(trusted1);
+        assertEq(configuredPeer1, peer);
+        assertEq(expectedNonce1, 1);
     }
 
     function testLayerZeroReceiverDestSwapPath() public {
@@ -598,7 +696,7 @@ contract BridgeAdaptersTest is Test {
         assertEq(token.balanceOf(payoutV2), amountV2);
     }
 
-    function testCCIPReceiverAdapterRevertsOnTokenMismatch() public {
+    function testCCIPReceiverAdapterStoresFailedMessageOnTokenMismatch() public {
         PayChainVault vault = new PayChainVault();
         PayChainRouter router = new PayChainRouter();
         TokenRegistry registry = new TokenRegistry();
@@ -621,8 +719,43 @@ contract BridgeAdaptersTest is Test {
         });
 
         vm.prank(ccipRouter);
-        vm.expectRevert(bytes("Token Mismatch"));
         receiver.ccipReceive(msgObj);
+
+        (bool exists, bytes32 paymentId, bytes memory reason, uint256 retryCount) = receiver.getFailedMessageStatus(msgObj.messageId);
+        assertTrue(exists);
+        assertEq(paymentId, keccak256("pid"));
+        assertGt(reason.length, 0);
+        assertEq(retryCount, 0);
+    }
+
+    function testCCIPReceiverAdapterRetryFailedMessageIncrementsRetryCount() public {
+        PayChainVault vault = new PayChainVault();
+        PayChainRouter router = new PayChainRouter();
+        TokenRegistry registry = new TokenRegistry();
+        PayChainGateway gateway = new PayChainGateway(address(vault), address(router), address(registry), address(this));
+
+        address ccipRouter = address(0xC0FFEE);
+        CCIPReceiverAdapter receiver = new CCIPReceiverAdapter(ccipRouter, address(gateway));
+        receiver.setTrustedSender(1, abi.encode(address(0x2)));
+
+        Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
+        tokenAmounts[0] = Client.EVMTokenAmount({token: address(0x1111), amount: 1});
+        Client.Any2EVMMessage memory msgObj = Client.Any2EVMMessage({
+            messageId: keccak256("retryable"),
+            sourceChainSelector: 1,
+            sender: abi.encode(address(0x2)),
+            data: abi.encode(keccak256("pid-retry"), address(0x2222), address(0x3), uint256(0)),
+            destTokenAmounts: tokenAmounts
+        });
+
+        vm.prank(ccipRouter);
+        receiver.ccipReceive(msgObj);
+
+        receiver.retryFailedMessage(msgObj.messageId);
+
+        (bool exists, , , uint256 retryCount) = receiver.getFailedMessageStatus(msgObj.messageId);
+        assertTrue(exists);
+        assertEq(retryCount, 1);
     }
 
     function testHyperbridgeReceiverRevertsIfNotHost() public {
@@ -773,14 +906,28 @@ contract BridgeAdaptersTest is Test {
         bytes memory payload1dup = abi.encode(keccak256("pid-n1dup"), uint256(50), address(token), address(0xCAFE), uint256(0));
         OApp.Origin memory originDup = OApp.Origin({srcEid: srcEid, sender: peer, nonce: 1});
         vm.prank(address(endpoint));
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LayerZeroReceiverAdapter.InvalidNonce.selector,
+                srcEid,
+                uint64(2),
+                uint64(1)
+            )
+        );
         receiver.lzReceive(originDup, keccak256("guid-n1dup"), payload1dup, address(0), bytes(""));
 
         // Nonce 3 (skip nonce 2, out-of-order) should revert
         bytes memory payload3 = abi.encode(keccak256("pid-n3"), uint256(50), address(token), address(0xCAFE), uint256(0));
         OApp.Origin memory origin3 = OApp.Origin({srcEid: srcEid, sender: peer, nonce: 3});
         vm.prank(address(endpoint));
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LayerZeroReceiverAdapter.InvalidNonce.selector,
+                srcEid,
+                uint64(2),
+                uint64(3)
+            )
+        );
         receiver.lzReceive(origin3, keccak256("guid-n3"), payload3, address(0), bytes(""));
 
         // Nonce 2 (correct next) should succeed
@@ -789,6 +936,12 @@ contract BridgeAdaptersTest is Test {
         vm.prank(address(endpoint));
         receiver.lzReceive(origin2, keccak256("guid-n2"), payload2, address(0), bytes(""));
         assertEq(token.balanceOf(address(0xCAFE)), 200);
+
+        (bool peerConfigured, bool trusted, bytes32 configuredPeer, uint64 expectedNonce) = receiver.getPathState(srcEid, peer);
+        assertTrue(peerConfigured);
+        assertTrue(trusted);
+        assertEq(configuredPeer, peer);
+        assertEq(expectedNonce, 3);
     }
 
     // ============ New Tests: HB Auto Refund On Timeout ============
@@ -863,7 +1016,7 @@ contract BridgeAdaptersTest is Test {
 
     function testLZOptionsBuilderEquivalence() public {
         MockLZEndpoint endpoint = new MockLZEndpoint();
-        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint));
+        LayerZeroSenderAdapter sender = new LayerZeroSenderAdapter(address(endpoint), address(this));
 
         // Verify the DEFAULT_LZ_GAS constant is set
         assertEq(sender.DEFAULT_LZ_GAS(), 200_000);

@@ -46,6 +46,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
 
     PayChainVault public vault;
     PayChainGateway public gateway;
+    address public immutable router;
     
     // Internal state for host helper
     address private immutable _HYPERBRIDGE_HOST;
@@ -100,18 +101,26 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     error NativeFeeQuoteUnavailable();
     error InsufficientNativeFee(uint256 required, uint256 provided);
     error FeeQuoteFailed(uint256 amount, address[] path);
+    error NotRouter();
 
     // ============ Constructor ============
 
     constructor(
         address _vault,
         address _host,
-        address _gateway
+        address _gateway,
+        address _router
     ) Ownable(msg.sender) {
-        if (_vault == address(0) || _host == address(0) || _gateway == address(0)) revert ZeroAddress();
+        if (_vault == address(0) || _host == address(0) || _gateway == address(0) || _router == address(0)) revert ZeroAddress();
         vault = PayChainVault(_vault);
         gateway = PayChainGateway(_gateway);
+        router = _router;
         _HYPERBRIDGE_HOST = _host;
+    }
+
+    modifier onlyRouter() {
+        if (msg.sender != router) revert NotRouter();
+        _;
     }
 
     // ============ Admin Functions ============
@@ -226,7 +235,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     /// @notice Send a cross-chain message via Hyperbridge ISMP
     /// @param message The bridge message containing payment details
     /// @return commitment The request commitment (message ID)
-    function sendMessage(BridgeMessage calldata message) external payable override returns (bytes32 commitment) {
+    function sendMessage(BridgeMessage calldata message) external payable override onlyRouter returns (bytes32 commitment) {
         bytes memory smId = stateMachineIds[message.destChainId];
         if (smId.length == 0) revert StateMachineIdNotSet(message.destChainId);
         
@@ -236,8 +245,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         address feeToken = IDispatcher(host()).feeToken();
         uint256 totalFeeTokenAmount = _dispatchFeeTokenAmount(message);
         uint256 relayerTip = relayerFeeTips[message.destChainId];
-        uint256 nativeQuote = this.quoteFee(message);
-        if (msg.value < nativeQuote) revert InsufficientNativeFee(nativeQuote, msg.value);
+        if (msg.value == 0) revert InsufficientNativeFee(1, 0);
 
         // Encode the payment instruction payload
         bytes memory body = _encodePayload(message);
@@ -252,22 +260,22 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             address weth = IUniswapV2Router02HB(currentRouter).WETH();
 
             // 1. Wrap native to WETH
-            IWETHHB(weth).deposit{value: nativeQuote}();
+            IWETHHB(weth).deposit{value: msg.value}();
             
             // 2. Approve swapper
-            IERC20(weth).forceApprove(address(swapper), nativeQuote);
+            IERC20(weth).forceApprove(address(swapper), msg.value);
             
             // 3. Swap WETH to feeToken
-            try swapper.swap(weth, feeToken, nativeQuote, totalFeeTokenAmount, address(this)) returns (uint256 amountOut) {
+            try swapper.swap(weth, feeToken, msg.value, totalFeeTokenAmount, address(this)) returns (uint256 amountOut) {
                 if (amountOut >= totalFeeTokenAmount) {
                     swapped = true;
                 } else {
                     // Not enough tokens swapped, unwrap back to native for V2 fallback
-                    IWETHHB(weth).withdraw(nativeQuote);
+                    IWETHHB(weth).withdraw(msg.value);
                 }
             } catch {
                 // Swap failed, unwrap back to native for V2 fallback
-                IWETHHB(weth).withdraw(nativeQuote);
+                IWETHHB(weth).withdraw(msg.value);
             }
         }
 
@@ -278,7 +286,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             body: body,
             timeout: defaultTimeout,
             fee: relayerTip,
-            payer: swapped ? address(this) : msg.sender
+            payer: message.payer
         });
 
         if (swapped) {
@@ -287,18 +295,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
             commitment = IDispatcher(host()).dispatch{value: 0}(request);
         } else {
             // Tier 3: Uniswap V2 Fallback (Dispatcher internal swap)
-            commitment = IDispatcher(host()).dispatch{value: nativeQuote}(request);
-        }
-
-        // Refund excess native tokens (best-effort).
-        // In PayChain flow, msg.sender is typically the router contract which may not accept plain ETH transfers.
-        // Do not revert cross-chain dispatch if refund cannot be delivered.
-        uint256 refund = msg.value - nativeQuote;
-        if (refund > 0) {
-            (bool success, ) = msg.sender.call{value: refund}("");
-            if (!success) {
-                // ignore refund failure
-            }
+            commitment = IDispatcher(host()).dispatch{value: msg.value}(request);
         }
 
         emit MessageDispatched(
@@ -353,9 +350,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     /// @param request The original PostRequest that timed out
     function onPostRequestTimeout(PostRequest calldata request) external override onlyHost {
         bytes32 paymentId = _decodePaymentId(request.body);
-        
-        gateway.markPaymentFailed(paymentId, "HYPERBRIDGE_TIMEOUT");
-        gateway.processRefund(paymentId);
+        gateway.adapterFailAndRefund(paymentId, "HYPERBRIDGE_TIMEOUT");
 
         emit PostRequestTimedOut(paymentId);
     }

@@ -20,6 +20,13 @@ interface ICCIPCfg {
     function setChainSelector(string calldata chainId, uint64 selector) external;
     function setDestinationAdapter(string calldata chainId, bytes calldata adapter) external;
     function setDestinationGasLimit(string calldata chainId, uint256 gasLimit) external;
+    function setDestinationFeeToken(string calldata chainId, address feeToken) external;
+    function setDestinationExtraArgs(string calldata chainId, bytes calldata extraArgs) external;
+}
+
+interface ICCIPReceiverCfg {
+    function setTrustedSender(uint64 chainSelector, bytes calldata sender) external;
+    function setSourceChainAllowed(uint64 chainSelector, bool allowed) external;
 }
 
 interface ILayerZeroCfg {
@@ -76,10 +83,34 @@ contract ConfigureRoutes is Script {
             uint64 selector = uint64(vm.envUint("ROUTE_CCIP_CHAIN_SELECTOR"));
             bytes memory dstAdapter = vm.parseBytes(vm.envString("ROUTE_CCIP_DEST_ADAPTER_HEX"));
             uint256 gasLimit = vm.envOr("ROUTE_CCIP_GAS_LIMIT", uint256(200000));
+            address feeToken = vm.envOr("ROUTE_CCIP_FEE_TOKEN", address(0));
+            bytes memory extraArgs = vm.parseBytes(vm.envOr("ROUTE_CCIP_EXTRA_ARGS_HEX", string("0x")));
             ICCIPCfg(ccipAdapter).setChainSelector(destCaip2, selector);
             ICCIPCfg(ccipAdapter).setDestinationAdapter(destCaip2, dstAdapter);
             ICCIPCfg(ccipAdapter).setDestinationGasLimit(destCaip2, gasLimit);
+            if (feeToken != address(0)) {
+                ICCIPCfg(ccipAdapter).setDestinationFeeToken(destCaip2, feeToken);
+            }
+            if (extraArgs.length > 0) {
+                ICCIPCfg(ccipAdapter).setDestinationExtraArgs(destCaip2, extraArgs);
+            }
             console.log("Configured CCIP route");
+        }
+
+        // CCIP receiver trust bootstrap (optional; run on destination chain)
+        address ccipReceiver = vm.envOr("ROUTE_CCIP_RECEIVER", address(0));
+        uint64 ccipSourceSelector = uint64(vm.envOr("ROUTE_CCIP_SOURCE_CHAIN_SELECTOR", uint256(0)));
+        if (ccipReceiver != address(0) && ccipSourceSelector > 0) {
+            bytes memory trustedSender = vm.parseBytes(vm.envOr("ROUTE_CCIP_TRUSTED_SENDER_HEX", string("0x")));
+            bool allowSource = vm.envOr("ROUTE_CCIP_ALLOW_SOURCE_CHAIN", true);
+
+            if (trustedSender.length > 0) {
+                ICCIPReceiverCfg(ccipReceiver).setTrustedSender(ccipSourceSelector, trustedSender);
+                console.log("Configured CCIP receiver trusted sender");
+            } else if (allowSource) {
+                ICCIPReceiverCfg(ccipReceiver).setSourceChainAllowed(ccipSourceSelector, true);
+                console.log("Configured CCIP receiver source chain allow");
+            }
         }
 
         // LayerZero route config
@@ -95,4 +126,3 @@ contract ConfigureRoutes is Script {
         vm.stopBroadcast();
     }
 }
-

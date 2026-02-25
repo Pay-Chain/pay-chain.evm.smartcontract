@@ -28,7 +28,7 @@ contract DeployBaseFixes is Script {
         // 2. Fix HyperbridgeSender (Base -> Polygon EXCESSIVE_INPUT_AMOUNT Fix)
         
         // Deploy new HyperbridgeSender
-        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway);
+        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway, routerAddress);
         console.log("New HyperbridgeSender deployed at:", address(newSender));
 
         // Configure Swap Router override (Use V2 Router for fee quotes/buffer)

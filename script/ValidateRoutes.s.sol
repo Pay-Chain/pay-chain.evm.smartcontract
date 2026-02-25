@@ -45,7 +45,8 @@ contract ValidateRoutes is Script {
             destToken: vm.envAddress("ROUTE_VALIDATE_DEST_TOKEN"),
             amount: vm.envUint("ROUTE_VALIDATE_AMOUNT"),
             destChainId: destCaip2,
-            minAmountOut: 0
+            minAmountOut: 0,
+            payer: address(0)
         });
 
         try r.quotePaymentFee(destCaip2, bridgeType, msgStruct) returns (uint256 fee) {
@@ -55,4 +56,3 @@ contract ValidateRoutes is Script {
         }
     }
 }
-

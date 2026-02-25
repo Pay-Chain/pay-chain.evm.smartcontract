@@ -8,6 +8,10 @@ interface IVaultGatewayV2 {
     function setAuthorizedSpender(address spender, bool authorized) external;
 }
 
+interface ITokenSwapperGatewayV2 {
+    function setAuthorizedCaller(address caller, bool allowed) external;
+}
+
 interface IGatewayConfigSource {
     function swapper() external view returns (address);
     function enableSourceSideSwap() external view returns (bool);
@@ -21,17 +25,30 @@ contract RedeployPayChainGatewayV2 is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
 
-        address vault = vm.envAddress("GATEWAY_V2_VAULT");
-        address router = vm.envAddress("GATEWAY_V2_ROUTER");
-        address tokenRegistry = vm.envAddress("GATEWAY_V2_TOKEN_REGISTRY");
-        address feeRecipient = vm.envAddress("GATEWAY_V2_FEE_RECIPIENT");
+        // ----------------------------
+        // Base mainnet hardcoded values
+        // Source of truth: CHAIN_BASE.md
+        // ----------------------------
+        address vault = 0xe3Be18b812b0645674cCa81f24dC5f7bD62911b7;
+        address router = 0x304185d7B5Eb9790Dc78805D2095612F7a43A291;
+        address tokenRegistry = 0x19cC8187e5DF6D482EF26443FC11C90123348C8e;
+        address feeRecipient = 0xE6A7d99011257AEc28Ad60EFED58A256c4d5Fea3;
 
-        address oldGateway = vm.envOr("GATEWAY_V2_OLD_GATEWAY", address(0));
-        bool deauthorizeOldGateway = vm.envOr("GATEWAY_V2_DEAUTHORIZE_OLD_GATEWAY", false);
-        bool copyConfigFromOldGateway = vm.envOr("GATEWAY_V2_COPY_CONFIG_FROM_OLD", true);
+        address oldGateway = 0xBaB8d97Fbdf6788BF40B01C096CFB2cC661ba642;
+        bool deauthorizeOldGateway = false;
+        bool copyConfigFromOldGateway = true;
 
-        uint256 adapterCount = vm.envOr("GATEWAY_V2_ADAPTER_COUNT", uint256(0));
-        uint256 defaultRouteCount = vm.envOr("GATEWAY_V2_DEFAULT_ROUTE_COUNT", uint256(0));
+        address[] memory adapters = new address[](4);
+        // CHAIN_BASE.md active adapters on Base.
+        adapters[0] = 0x95C8aF513D4a898B125A3EE4a34979ef127Ef1c1; // CCIPReceiverAdapter
+        adapters[1] = 0x4864138d5Dc8a5bcFd4228D7F784D1F32859986f; // LayerZeroReceiverAdapter
+        adapters[2] = 0xf4348E2e6AF1860ea9Ab0F3854149582b608b5e2; // HyperbridgeReceiver
+        adapters[3] = 0x6709C0dF1a2a015B3C34d6C7a04a185fbAc4740a; // HyperbridgeSender
+
+        string[] memory defaultRouteDests = new string[](1);
+        uint8[] memory defaultRouteBridgeTypes = new uint8[](1);
+        defaultRouteDests[0] = "eip155:137";
+        defaultRouteBridgeTypes[0] = 0;
 
         vm.startBroadcast(pk);
 
@@ -45,27 +62,39 @@ contract RedeployPayChainGatewayV2 is Script {
             _copyConfig(gatewayV2, oldGateway);
         }
 
+        // Re-wire swapper auth for new gateway (if swapper already configured/copied).
+        address configuredSwapper = address(gatewayV2.swapper());
+        if (configuredSwapper != address(0)) {
+            // Ensure vault still allows swapper pull/push flows.
+            IVaultGatewayV2(vault).setAuthorizedSpender(configuredSwapper, true);
+            // Ensure swapper allows calls from new gateway.
+            try ITokenSwapperGatewayV2(configuredSwapper).setAuthorizedCaller(address(gatewayV2), true) {
+                // no-op
+            } catch {
+                console.log("setAuthorizedCaller(newGateway) failed on swapper, skip");
+            }
+        }
+
         // Authorize existing adapters in new gateway for markPaymentFailed/finalization callback paths.
-        for (uint256 i = 0; i < adapterCount; i++) {
-            address adapter = vm.envAddress(_keyWithIndex("GATEWAY_V2_ADAPTER_", i));
+        for (uint256 i = 0; i < adapters.length; i++) {
+            address adapter = adapters[i];
             gatewayV2.setAuthorizedAdapter(adapter, true);
         }
 
         // Optional: set default bridge type for known routes.
-        // Requires:
-        // - GATEWAY_V2_DEFAULT_ROUTE_COUNT
-        // - GATEWAY_V2_ROUTE_DEST_<i> (e.g. eip155:137)
-        // - GATEWAY_V2_ROUTE_BRIDGE_TYPE_<i> (0/1/2)
-        for (uint256 i = 0; i < defaultRouteCount; i++) {
-            string memory destCaip2 = vm.envString(_keyWithIndex("GATEWAY_V2_ROUTE_DEST_", i));
-            uint256 bridgeTypeRaw = vm.envUint(_keyWithIndex("GATEWAY_V2_ROUTE_BRIDGE_TYPE_", i));
-            require(bridgeTypeRaw <= type(uint8).max, "bridge type overflow");
-            // forge-lint: disable-next-line(unsafe-typecast)
-            gatewayV2.setDefaultBridgeType(destCaip2, uint8(bridgeTypeRaw));
+        for (uint256 i = 0; i < defaultRouteDests.length; i++) {
+            gatewayV2.setDefaultBridgeType(defaultRouteDests[i], defaultRouteBridgeTypes[i]);
         }
 
         if (deauthorizeOldGateway && oldGateway != address(0)) {
             IVaultGatewayV2(vault).setAuthorizedSpender(oldGateway, false);
+            if (configuredSwapper != address(0)) {
+                try ITokenSwapperGatewayV2(configuredSwapper).setAuthorizedCaller(oldGateway, false) {
+                    // no-op
+                } catch {
+                    console.log("setAuthorizedCaller(oldGateway,false) failed on swapper, skip");
+                }
+            }
         }
 
         vm.stopBroadcast();
@@ -92,31 +121,13 @@ contract RedeployPayChainGatewayV2 is Script {
         }
         gatewayV2.setEnableSourceSideSwap(old.enableSourceSideSwap());
 
-        (bool enabled, uint256 perByteRate, uint256 overheadBytes, uint256 minFee, uint256 maxFee) =
-            old.platformFeePolicy();
-        gatewayV2.setPlatformFeePolicy(enabled, perByteRate, overheadBytes, minFee, maxFee);
-    }
-
-    function _keyWithIndex(string memory prefix, uint256 index) internal pure returns (string memory) {
-        return string.concat(prefix, _uintToString(index));
-    }
-
-    function _uintToString(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
+        // Optional (Track-B): not all legacy gateways expose platformFeePolicy().
+        try old.platformFeePolicy() returns (
+            bool enabled, uint256 perByteRate, uint256 overheadBytes, uint256 minFee, uint256 maxFee
+        ) {
+            gatewayV2.setPlatformFeePolicy(enabled, perByteRate, overheadBytes, minFee, maxFee);
+        } catch {
+            console.log("platformFeePolicy() unavailable on old gateway, skip copy");
         }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
     }
 }

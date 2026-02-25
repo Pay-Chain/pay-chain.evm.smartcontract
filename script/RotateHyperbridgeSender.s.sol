@@ -45,7 +45,7 @@ contract RotateHyperbridgeSender is Script {
 
         vm.startBroadcast(pk);
 
-        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway);
+        HyperbridgeSender newSender = new HyperbridgeSender(vault, host, gateway, router);
 
         if (swapRouter != address(0)) {
             newSender.setSwapRouter(swapRouter);

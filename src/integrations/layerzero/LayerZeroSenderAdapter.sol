@@ -41,6 +41,7 @@ interface ILayerZeroEndpointV2 {
  */
 contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     ILayerZeroEndpointV2 public endpoint;
+    address public immutable router;
 
     mapping(string => uint32) public dstEids;
     mapping(string => bytes32) public peers;
@@ -54,12 +55,23 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     event EndpointUpdated(address indexed oldEndpoint, address indexed newEndpoint);
 
     error InvalidEndpoint();
+    error InvalidRouter();
+    error InvalidOptions();
+    error InvalidOptionsType(uint16 optionsType);
     error RouteNotConfigured(string destChainId);
     error InsufficientNativeFee(uint256 required, uint256 provided);
+    error NotRouter();
 
-    constructor(address _endpoint) Ownable(msg.sender) {
+    constructor(address _endpoint, address _router) Ownable(msg.sender) {
         if (_endpoint == address(0)) revert InvalidEndpoint();
+        if (_router == address(0)) revert InvalidRouter();
         endpoint = ILayerZeroEndpointV2(_endpoint);
+        router = _router;
+    }
+
+    modifier onlyRouter() {
+        if (msg.sender != router) revert NotRouter();
+        _;
     }
 
     function setEndpoint(address _endpoint) external onlyOwner {
@@ -75,6 +87,7 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     }
 
     function setEnforcedOptions(string calldata destChainId, bytes calldata options) external onlyOwner {
+        _validateType3Options(options);
         enforcedOptions[destChainId] = options;
         emit LayerZeroOptionsSet(destChainId, options);
     }
@@ -85,15 +98,15 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     }
 
     function quoteFee(BridgeMessage calldata message) external view override returns (uint256 fee) {
-        (ILayerZeroEndpointV2.MessagingParams memory params, ) = _buildParams(message);
-        ILayerZeroEndpointV2.MessagingFee memory quoted = endpoint.quote(params, address(this));
-        return quoted.nativeFee;
+        (, uint256 quotedFee) = _buildParams(message);
+        return quotedFee;
     }
 
-    function sendMessage(BridgeMessage calldata message) external payable override returns (bytes32 messageId) {
+    function sendMessage(BridgeMessage calldata message) external payable override onlyRouter returns (bytes32 messageId) {
         (ILayerZeroEndpointV2.MessagingParams memory params, uint256 quotedFee) = _buildParams(message);
         if (msg.value < quotedFee) revert InsufficientNativeFee(quotedFee, msg.value);
-        ILayerZeroEndpointV2.MessagingReceipt memory receipt = endpoint.send{value: msg.value}(params, msg.sender);
+        address refundTo = message.payer == address(0) ? owner() : message.payer;
+        ILayerZeroEndpointV2.MessagingReceipt memory receipt = endpoint.send{value: msg.value}(params, refundTo);
         return receipt.guid;
     }
 
@@ -154,5 +167,16 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
             uint8(1),            // Option type: lzReceive
             DEFAULT_LZ_GAS       // Gas limit (uint128)
         );
+    }
+
+    /// @notice Validate options format; only Type-3 options are accepted when provided
+    /// @dev Empty bytes are allowed to clear route-level enforced options.
+    function _validateType3Options(bytes calldata options) internal pure {
+        if (options.length == 0) {
+            return;
+        }
+        if (options.length < 2) revert InvalidOptions();
+        uint16 optionsType = (uint16(uint8(options[0])) << 8) | uint16(uint8(options[1]));
+        if (optionsType != 3) revert InvalidOptionsType(optionsType);
     }
 }

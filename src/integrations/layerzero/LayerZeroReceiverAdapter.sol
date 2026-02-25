@@ -38,7 +38,7 @@ contract LayerZeroReceiverAdapter is OApp {
     // ============ Errors ============
 
     error UnauthorizedEndpoint();
-    error UntrustedPeer(uint32 srcEid, bytes32 peer);
+    error UntrustedPeer(uint32 srcEid, bytes32 sender, bytes32 expectedPeer);
     error InvalidNonce(uint32 srcEid, uint64 expected, uint64 received);
 
     // ============ Constructor ============
@@ -71,8 +71,9 @@ contract LayerZeroReceiverAdapter is OApp {
         bytes calldata /*_extraData*/
     ) external payable onlyEndpoint {
         // Trust: verify sender is a registered peer
-        if (!_allowInitializePath(_origin)) {
-            revert UntrustedPeer(_origin.srcEid, _origin.sender);
+        bytes32 expectedPeer = peers[_origin.srcEid];
+        if (expectedPeer != _origin.sender) {
+            revert UntrustedPeer(_origin.srcEid, _origin.sender, expectedPeer);
         }
 
         // LZ-4: Strict sequential nonce validation (mirrors OAppReceiver._acceptNonce)
@@ -127,6 +128,23 @@ contract LayerZeroReceiverAdapter is OApp {
     function nextNonce(uint32 _srcEid, bytes32 _sender) external view returns (uint64) {
         if (peers[_srcEid] != _sender) return 0;
         return inboundNonces[_srcEid] + 1;
+    }
+
+    /// @notice Path diagnostics helper for ops and backend preflight.
+    /// @param _srcEid Source endpoint ID.
+    /// @param _sender Sender bytes32 address expected from source chain.
+    /// @return peerConfigured Whether a peer is configured for srcEid.
+    /// @return trusted Whether the provided sender matches configured peer.
+    /// @return configuredPeer Configured peer bytes32 for srcEid.
+    /// @return expectedNonce Next expected nonce if trusted, otherwise 0.
+    function getPathState(
+        uint32 _srcEid,
+        bytes32 _sender
+    ) external view returns (bool peerConfigured, bool trusted, bytes32 configuredPeer, uint64 expectedNonce) {
+        configuredPeer = peers[_srcEid];
+        peerConfigured = configuredPeer != bytes32(0);
+        trusted = peerConfigured && configuredPeer == _sender;
+        expectedNonce = trusted ? inboundNonces[_srcEid] + 1 : 0;
     }
 
     function _decodePayload(

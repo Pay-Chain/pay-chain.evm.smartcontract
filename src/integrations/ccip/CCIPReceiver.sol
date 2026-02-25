@@ -30,6 +30,12 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
     /// @notice Allowed source chain selectors
     mapping(uint64 => bool) public allowedSourceChains;
 
+    /// @notice Failed message payloads for manual retry
+    mapping(bytes32 => bytes) public failedMessages;
+    mapping(bytes32 => bytes) public failedMessageReasons;
+    mapping(bytes32 => uint256) public failedMessageRetryCount;
+    mapping(bytes32 => bytes32) public failedMessagePaymentIds;
+
     // ============ Events ============
 
     event TrustedSenderSet(uint64 indexed chainSelector, bytes sender);
@@ -42,12 +48,21 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
         uint256 minAmountOut,
         bool swapped
     );
+    event CCIPMessageProcessingFailed(
+        bytes32 indexed messageId,
+        bytes32 indexed paymentId,
+        uint64 indexed sourceChainSelector,
+        bytes reason
+    );
+    event CCIPMessageRetried(bytes32 indexed messageId, bool success, bytes reason, uint256 retryCount);
 
     // ============ Errors ============
 
     error UntrustedSourceChain(uint64 chainSelector);
     error UntrustedSender(uint64 chainSelector, bytes sender);
     error PayloadDecodeFailed();
+    error FailedMessageNotFound(bytes32 messageId);
+    error UnauthorizedProcessor(address caller);
     
     // ============ Constructor ============
 
@@ -79,6 +94,37 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
         swapper = TokenSwapper(_swapper);
     }
 
+    /// @notice Retry failed message processing
+    function retryFailedMessage(bytes32 messageId) external onlyOwner {
+        bytes memory encoded = failedMessages[messageId];
+        if (encoded.length == 0) revert FailedMessageNotFound(messageId);
+
+        Client.Any2EVMMessage memory message = abi.decode(encoded, (Client.Any2EVMMessage));
+        uint256 retryCount = failedMessageRetryCount[messageId] + 1;
+        failedMessageRetryCount[messageId] = retryCount;
+
+        try this.processMessageEntry(message) {
+            delete failedMessages[messageId];
+            delete failedMessageReasons[messageId];
+            delete failedMessageRetryCount[messageId];
+            delete failedMessagePaymentIds[messageId];
+            emit CCIPMessageRetried(messageId, true, bytes(""), retryCount);
+        } catch (bytes memory reason) {
+            failedMessageReasons[messageId] = reason;
+            emit CCIPMessageRetried(messageId, false, reason, retryCount);
+        }
+    }
+
+    /// @notice Diagnostic helper to inspect failed message status
+    function getFailedMessageStatus(
+        bytes32 messageId
+    ) external view returns (bool exists, bytes32 paymentId, bytes memory reason, uint256 retryCount) {
+        exists = failedMessages[messageId].length > 0;
+        paymentId = failedMessagePaymentIds[messageId];
+        reason = failedMessageReasons[messageId];
+        retryCount = failedMessageRetryCount[messageId];
+    }
+
     // ============ CCIPReceiver Implementation ============
 
     function _ccipReceive(
@@ -94,6 +140,26 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
             revert UntrustedSender(message.sourceChainSelector, message.sender);
         }
 
+        // Business processing is fail-open with failure ledger + manual retry.
+        try this.processMessageEntry(message) {
+            // Success path is emitted by _processMessage.
+        } catch (bytes memory reason) {
+            bytes32 paymentId = _extractPaymentId(message.data);
+            failedMessages[message.messageId] = abi.encode(message);
+            failedMessageReasons[message.messageId] = reason;
+            failedMessagePaymentIds[message.messageId] = paymentId;
+            emit CCIPMessageProcessingFailed(message.messageId, paymentId, message.sourceChainSelector, reason);
+        }
+    }
+
+    /// @dev External entry used to enable try/catch for processing failures.
+    /// Callable only by this contract via `this.processMessageEntry(...)`.
+    function processMessageEntry(Client.Any2EVMMessage calldata message) external {
+        if (msg.sender != address(this)) revert UnauthorizedProcessor(msg.sender);
+        _processMessage(message);
+    }
+
+    function _processMessage(Client.Any2EVMMessage memory message) internal {
         // --- 4-field decode (matches CCIPSender._buildMessage payload) ---
         (
             bytes32 paymentId,
@@ -132,6 +198,14 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
         gateway.finalizeIncomingPayment(paymentId, receiver, settledToken, settledAmount);
 
         emit CCIPPaymentReceived(paymentId, receiver, settledToken, settledAmount, minAmountOut, swapped);
+    }
+
+    function _extractPaymentId(bytes memory data) internal pure returns (bytes32 paymentId) {
+        if (data.length >= 32) {
+            assembly {
+                paymentId := mload(add(data, 32))
+            }
+        }
     }
 
     function _decodePayload(

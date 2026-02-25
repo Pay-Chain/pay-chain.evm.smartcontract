@@ -8,8 +8,21 @@ import "@hyperbridge/core/apps/HyperApp.sol";
 contract MockPathway {}
 
 contract MockGateway {
+    bool public markFailedCalled;
+    bool public adapterRefundCalled;
+    bytes32 public lastPaymentId;
+
     function finalizeIncomingPayment(bytes32, address, address, uint256) external {}
-    function markPaymentFailed(bytes32, string calldata) external {}
+
+    function markPaymentFailed(bytes32 paymentId, string calldata) external {
+        markFailedCalled = true;
+        lastPaymentId = paymentId;
+    }
+
+    function adapterFailAndRefund(bytes32 paymentId, string calldata) external {
+        adapterRefundCalled = true;
+        lastPaymentId = paymentId;
+    }
 }
 
 contract MockVault {
@@ -101,5 +114,33 @@ contract HyperbridgeReceiverTest is Test {
 
 
         receiver.onAccept(req);
+    }
+
+    function test_OnPostRequestTimeout_AutoRefundDisabled_OnlyMarksFailed() public {
+        bytes32 paymentId = keccak256("pid-timeout-disabled");
+        PostRequest memory post;
+        post.body = abi.encode(paymentId, uint256(100), address(0x10), address(0x20), uint256(0), address(0));
+
+        vm.prank(host);
+        receiver.onPostRequestTimeout(post);
+
+        assertTrue(gateway.markFailedCalled());
+        assertFalse(gateway.adapterRefundCalled());
+        assertEq(gateway.lastPaymentId(), paymentId);
+    }
+
+    function test_OnPostRequestTimeout_AutoRefundEnabled_UsesAdapterFailAndRefund() public {
+        receiver.setAutoRefundOnTimeout(true);
+
+        bytes32 paymentId = keccak256("pid-timeout-enabled");
+        PostRequest memory post;
+        post.body = abi.encode(paymentId, uint256(100), address(0x10), address(0x20), uint256(0), address(0));
+
+        vm.prank(host);
+        receiver.onPostRequestTimeout(post);
+
+        assertFalse(gateway.markFailedCalled());
+        assertTrue(gateway.adapterRefundCalled());
+        assertEq(gateway.lastPaymentId(), paymentId);
     }
 }

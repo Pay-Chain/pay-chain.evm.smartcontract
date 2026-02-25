@@ -15,6 +15,7 @@ interface IBridgeAdapter {
         uint256 amount;
         string destChainId; // CAIP-2 or string identifier used by the bridge
         uint256 minAmountOut; // Minimum amount to receive on destination (slippage protection)
+        address payer; // Beneficiary for relayer fee refund on timeout
     }
 
     // ============ Sender Functions ============

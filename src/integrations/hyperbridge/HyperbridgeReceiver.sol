@@ -135,13 +135,14 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
     function onPostRequestTimeout(PostRequest memory request) external override onlyHost {
         // Decode only paymentId with backward-compatible payload handling
         (bytes32 paymentId,,,,,) = _decodePayload(request.body);
-        gateway.markPaymentFailed(paymentId, "HYPERBRIDGE_TIMEOUT");
 
-        // HB-2: Optionally process refund atomically
+        // Optionally trigger adapter-safe fail+refund atomically
         bool refunded = false;
         if (autoRefundOnTimeout) {
-            gateway.processRefund(paymentId);
+            gateway.adapterFailAndRefund(paymentId, "HYPERBRIDGE_TIMEOUT");
             refunded = true;
+        } else {
+            gateway.markPaymentFailed(paymentId, "HYPERBRIDGE_TIMEOUT");
         }
 
         emit PostRequestTimedOut(paymentId, refunded);

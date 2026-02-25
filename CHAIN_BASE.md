@@ -1,16 +1,27 @@
 # DEPLOYMENT CONTRACT
 TokenRegistry deployed at: 0x19cC8187e5DF6D482EF26443FC11C90123348C8e
 PayChainVault deployed at: 0xe3Be18b812b0645674cCa81f24dC5f7bD62911b7
-PayChainRouter deployed at: 0x304185d7B5Eb9790Dc78805D2095612F7a43A291
-PayChainGateway deployed at: 0xBaB8d97Fbdf6788BF40B01C096CFB2cC661ba642
+PayChainRouter deployed at: 0x1d7550079DAe36f55F4999E0B24AC037D092249C
+PayChainGateway deployed at: 0xC696dCAC9369fD26AB37d116C54cC2f19B156e4D
 TokenSwapper deployed at: 0x6E331897BCa189678cd60E966F1b1c94517E946E (V3 - Support Reset Pair & Multi-hop)
 -> Correct Checksummed Address for Viem: 0x6E331897BCa189678cd60E966F1b1c94517E946E
 CCIPSender deployed at: 0xc60b6f567562c756bE5E29f31318bb7793852850
 CCIPReceiverAdapter deployed at: 0x95C8aF513D4a898B125A3EE4a34979ef127Ef1c1
-HyperbridgeSender deployed at: 0x6709C0dF1a2a015B3C34d6C7a04a185fbAc4740a (Verified)
+HyperbridgeSender deployed at: 0x48c8A8C1Bb988CFf5F865356c0d823FBD819C34A (Verified)
 HyperbridgeReceiver deployed at: 0xf4348E2e6AF1860ea9Ab0F3854149582b608b5e2
-LayerZeroSenderAdapter deployed at: 0xD37f7315ea96eD6b3539dFc4bc87368D9F2b7478
-LayerZeroReceiverAdapter deployed at: 0x4864138d5Dc8a5bcFd4228D7F784D1F32859986f
+LayerZeroSenderAdapter deployed at: 0x54A139b53eA67Aa59a60Adc353B4C6fC3a00b3D6 (Active, rotated)
+LayerZeroReceiverAdapter deployed at: 0xDa17664D9cdD9524D8c1583a84325FBB5a1cFDA8 (Active, rotated)
+LayerZeroSenderAdapter (old): 0xD37f7315ea96eD6b3539dFc4bc87368D9F2b7478
+LayerZeroReceiverAdapter (old): 0x4864138d5Dc8a5bcFd4228D7F784D1F32859986f
+
+# LAYERZERO ROUTE STATUS (Base -> Polygon)
+Route CAIP2: eip155:137
+Bridge type: 2 (LayerZero)
+Sender dstEid: 30109
+Sender dstPeer: 0x00000000000000000000000067aac121bc447f112389921a8b94c3d6fcbd98f9
+Receiver srcEid: 30109
+Receiver srcPeer: 0x000000000000000000000000cc37c9af29e58a17ae1191159b4ba67f56d1bd1e
+Validation: lz-validate-dry passed (adapter exists, route configured, receiver trusted, fee quote ok)
 
 # AUTHORIZED TOKEN
 Registered bridge token as supported: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
