@@ -14,6 +14,7 @@ import "../src/gateway/fee/FeePolicyManager.sol";
 contract DeployGatewayModular is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
+        address registry = vm.envAddress("GW_MOD_TOKEN_REGISTRY");
         bool deployAdaptive = vm.envOr("GW_MOD_DEPLOY_ADAPTIVE", false);
         uint256 baseBps = vm.envOr("GW_MOD_ADAPTIVE_BASE_BPS", uint256(20));
         uint256 boostBps = vm.envOr("GW_MOD_ADAPTIVE_BOOST_BPS", uint256(10));
@@ -27,7 +28,7 @@ contract DeployGatewayModular is Script {
         GatewayExecutionModule executor = new GatewayExecutionModule();
         GatewayPrivacyModule privacy = new GatewayPrivacyModule();
 
-        FeeStrategyDefaultV1 defaultStrategy = new FeeStrategyDefaultV1();
+        FeeStrategyDefaultV1 defaultStrategy = new FeeStrategyDefaultV1(registry);
         FeePolicyManager manager = new FeePolicyManager(address(defaultStrategy));
 
         address adaptiveStrategy = address(0);
@@ -48,4 +49,3 @@ contract DeployGatewayModular is Script {
         console.log("adaptiveStrategy:", adaptiveStrategy);
     }
 }
-

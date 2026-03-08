@@ -230,7 +230,7 @@ contract PaymentKitaGatewayV2Phase1Test is Test {
         quoteModule = new GatewayQuoteModule();
         executionModule = new GatewayExecutionModule();
         privacyModule = new GatewayPrivacyModule();
-        defaultStrategy = new FeeStrategyDefaultV1();
+        defaultStrategy = new FeeStrategyDefaultV1(address(registry));
         feePolicyManager = new FeePolicyManager(address(defaultStrategy));
 
         registry.setTokenSupport(address(sourceToken), true);

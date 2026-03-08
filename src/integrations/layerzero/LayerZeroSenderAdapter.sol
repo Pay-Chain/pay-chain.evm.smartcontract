@@ -41,7 +41,7 @@ interface ILayerZeroEndpointV2 {
  */
 contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     ILayerZeroEndpointV2 public endpoint;
-    address public immutable router;
+    address public router;
 
     mapping(string => uint32) public dstEids;
     mapping(string => bytes32) public peers;
@@ -53,6 +53,7 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
     event LayerZeroRouteSet(string indexed destChainId, uint32 dstEid, bytes32 peer);
     event LayerZeroOptionsSet(string indexed destChainId, bytes options);
     event EndpointUpdated(address indexed oldEndpoint, address indexed newEndpoint);
+    event RouterUpdated(address indexed oldRouter, address indexed newRouter);
 
     error InvalidEndpoint();
     error InvalidRouter();
@@ -82,6 +83,12 @@ contract LayerZeroSenderAdapter is IBridgeAdapter, Ownable {
         if (_endpoint == address(0)) revert InvalidEndpoint();
         emit EndpointUpdated(address(endpoint), _endpoint);
         endpoint = ILayerZeroEndpointV2(_endpoint);
+    }
+
+    function setRouter(address _router) external onlyOwner {
+        if (_router == address(0)) revert InvalidRouter();
+        emit RouterUpdated(router, _router);
+        router = _router;
     }
 
     function setRoute(string calldata destChainId, uint32 dstEid, bytes32 peer) external onlyOwner {

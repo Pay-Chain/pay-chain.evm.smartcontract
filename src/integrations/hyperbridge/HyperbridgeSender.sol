@@ -46,10 +46,10 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
 
     PaymentKitaVault public vault;
     PaymentKitaGateway public gateway;
-    address public immutable router;
+    address public router;
     
     // Internal state for host helper
-    address private immutable _HYPERBRIDGE_HOST;
+    address private hyperbridgeHost;
     
     /// @notice State machine identifiers for destination chains
     /// @dev Format: "POLKADOT-1000", "EVM-1", "EVM-42161", etc.
@@ -87,6 +87,10 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     event DestinationContractSet(string indexed chainId, bytes destination);
     event TimeoutUpdated(uint64 oldTimeout, uint64 newTimeout);
     event PostRequestTimedOut(bytes32 indexed paymentId);
+    event RouterUpdated(address indexed oldRouter, address indexed newRouter);
+    event HostUpdated(address indexed oldHost, address indexed newHost);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
+    event GatewayUpdated(address indexed oldGateway, address indexed newGateway);
     event SwapRouterSet(address indexed router);
     event SwapperSet(address indexed swapper);
     event RelayerFeeTipSet(string indexed chainId, uint256 feeTokenAmount);
@@ -115,7 +119,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
         vault = PaymentKitaVault(_vault);
         gateway = PaymentKitaGateway(_gateway);
         router = _router;
-        _HYPERBRIDGE_HOST = _host;
+        hyperbridgeHost = _host;
     }
 
     modifier onlyRouter() {
@@ -141,6 +145,30 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     function setSwapper(address _swapper) external onlyOwner {
         swapper = ISwapperHB(_swapper);
         emit SwapperSet(_swapper);
+    }
+
+    function setRouter(address _router) external onlyOwner {
+        if (_router == address(0)) revert ZeroAddress();
+        emit RouterUpdated(router, _router);
+        router = _router;
+    }
+
+    function setHost(address _host) external onlyOwner {
+        if (_host == address(0)) revert ZeroAddress();
+        emit HostUpdated(hyperbridgeHost, _host);
+        hyperbridgeHost = _host;
+    }
+
+    function setVault(address _vault) external onlyOwner {
+        if (_vault == address(0)) revert ZeroAddress();
+        emit VaultUpdated(address(vault), _vault);
+        vault = PaymentKitaVault(_vault);
+    }
+
+    function setGateway(address _gateway) external onlyOwner {
+        if (_gateway == address(0)) revert ZeroAddress();
+        emit GatewayUpdated(address(gateway), _gateway);
+        gateway = PaymentKitaGateway(_gateway);
     }
 
 
@@ -346,7 +374,7 @@ contract HyperbridgeSender is IBridgeAdapter, HyperApp, Ownable {
     // ============ HyperApp Support ============
 
     function host() public view override returns (address) {
-        return _HYPERBRIDGE_HOST;
+        return hyperbridgeHost;
     }
 
     /// @notice Handle timed-out post requests from Hyperbridge

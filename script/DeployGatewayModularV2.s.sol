@@ -65,7 +65,7 @@ contract DeployGatewayModularV2 is Script {
         GatewayQuoteModule quoter = new GatewayQuoteModule();
         GatewayExecutionModule executor = new GatewayExecutionModule();
         GatewayPrivacyModule privacy = new GatewayPrivacyModule();
-        FeeStrategyDefaultV1 defaultStrategy = new FeeStrategyDefaultV1();
+        FeeStrategyDefaultV1 defaultStrategy = new FeeStrategyDefaultV1(registry);
         FeePolicyManager manager = new FeePolicyManager(address(defaultStrategy));
 
         address adaptiveStrategy = address(0);
@@ -157,4 +157,3 @@ contract DeployGatewayModularV2 is Script {
         gateway.setAuthorizedAdapter(adapter, true);
     }
 }
-

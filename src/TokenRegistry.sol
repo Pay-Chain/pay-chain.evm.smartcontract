@@ -8,15 +8,16 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  * @notice Central registry for supported tokens in the PaymentKita protocol
  */
 contract TokenRegistry is Ownable {
-    
     // ============ State Variables ============
 
     mapping(address => bool) public supportedTokens;
+    mapping(address => uint8) public tokenDecimals;
     address[] public supportedTokenList;
 
     // ============ Events ============
-    
+
     event TokenSupportUpdated(address indexed token, bool supported);
+    event TokenDecimalsUpdated(address indexed token, uint8 decimals);
 
     // ============ Constructor ============
 
@@ -26,7 +27,7 @@ contract TokenRegistry is Ownable {
 
     function setTokenSupport(address token, bool supported) external onlyOwner {
         require(token != address(0), "Invalid token");
-        
+
         if (supported && !supportedTokens[token]) {
             supportedTokenList.push(token);
         } else if (!supported && supportedTokens[token]) {
@@ -37,6 +38,12 @@ contract TokenRegistry is Ownable {
 
         supportedTokens[token] = supported;
         emit TokenSupportUpdated(token, supported);
+    }
+
+    function setTokenDecimals(address token, uint8 decimals) external onlyOwner {
+        require(token != address(0), "Invalid token");
+        tokenDecimals[token] = decimals;
+        emit TokenDecimalsUpdated(token, decimals);
     }
 
     // ============ View Functions ============

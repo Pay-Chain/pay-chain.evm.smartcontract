@@ -29,6 +29,9 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
     event PostRequestTimedOut(bytes32 indexed paymentId, bool refunded);
     event TrustedSenderSet(bytes32 indexed sourceChainHash, bytes trustedSender);
     event AutoRefundOnTimeoutSet(bool enabled);
+    event HostUpdated(address indexed oldHost, address indexed newHost);
+    event GatewayUpdated(address indexed oldGateway, address indexed newGateway);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
     
     // ============ Constructor ============
 
@@ -37,7 +40,7 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
         address _gateway,
         address _vault
     ) Ownable(msg.sender) {
-        _HYPERBRIDGE_HOST = _host; // HyperApp internal var
+        hyperbridgeHost = _host;
         gateway = PaymentKitaGateway(_gateway);
         vault = PaymentKitaVault(_vault);
     }
@@ -56,6 +59,24 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
 
     function setSwapper(address _swapper) external onlyOwner {
         swapper = TokenSwapper(_swapper);
+    }
+
+    function setHost(address _host) external onlyOwner {
+        require(_host != address(0), "Invalid host");
+        emit HostUpdated(hyperbridgeHost, _host);
+        hyperbridgeHost = _host;
+    }
+
+    function setGateway(address _gateway) external onlyOwner {
+        require(_gateway != address(0), "Invalid gateway");
+        emit GatewayUpdated(address(gateway), _gateway);
+        gateway = PaymentKitaGateway(_gateway);
+    }
+
+    function setVault(address _vault) external onlyOwner {
+        require(_vault != address(0), "Invalid vault");
+        emit VaultUpdated(address(vault), _vault);
+        vault = PaymentKitaVault(_vault);
     }
 
     /// @notice Enable or disable automatic refund processing on timeout
@@ -121,10 +142,10 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
     }
     
     // Internal state for host helper
-    address private immutable _HYPERBRIDGE_HOST;
+    address private hyperbridgeHost;
     
     function host() public view override returns (address) {
-        return _HYPERBRIDGE_HOST;
+        return hyperbridgeHost;
     }
 
     // ============ Timeout Handler ============

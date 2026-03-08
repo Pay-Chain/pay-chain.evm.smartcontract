@@ -54,6 +54,8 @@ contract CCIPSender is IBridgeAdapter, Ownable {
 
     event ChainConfigSet(string indexed chainId, uint64 selector, address destAdapter);
     event AuthorizedCallerUpdated(address indexed caller, bool allowed);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
+    event RouterUpdated(address indexed oldRouter, address indexed newRouter);
     event DestinationExtraArgsSet(string indexed chainId, bytes extraArgs);
     event DestinationFeeTokenSet(string indexed chainId, address feeToken);
     event NativeFeeSettled(
@@ -133,6 +135,18 @@ contract CCIPSender is IBridgeAdapter, Ownable {
         require(caller != address(0), "Invalid caller");
         authorizedCallers[caller] = allowed;
         emit AuthorizedCallerUpdated(caller, allowed);
+    }
+
+    function setVault(address _vault) external onlyOwner {
+        require(_vault != address(0), "Invalid vault");
+        emit VaultUpdated(address(vault), _vault);
+        vault = PaymentKitaVault(_vault);
+    }
+
+    function setRouter(address _router) external onlyOwner {
+        require(_router != address(0), "Invalid router");
+        emit RouterUpdated(address(router), _router);
+        router = IRouterClient(_router);
     }
 
     // ============ IBridgeAdapter Implementation ============

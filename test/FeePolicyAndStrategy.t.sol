@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import "../src/PaymentKitaGateway.sol";
 import "../src/PaymentKitaRouter.sol";
@@ -10,6 +11,16 @@ import "../src/vaults/PaymentKitaVault.sol";
 import "../src/gateway/fee/FeePolicyManager.sol";
 import "../src/gateway/fee/strategies/FeeStrategyDefaultV1.sol";
 import "../src/interfaces/IFeeStrategy.sol";
+import "../src/gateway/modules/GatewayValidatorModule.sol";
+import "../src/gateway/modules/GatewayQuoteModule.sol";
+import "../src/gateway/modules/GatewayExecutionModule.sol";
+import "../src/gateway/modules/GatewayPrivacyModule.sol";
+
+contract MockFeeToken is ERC20 {
+    constructor() ERC20("Mock Fee Token", "MFT") {
+        _mint(msg.sender, 1_000_000 ether);
+    }
+}
 
 contract MockFixedFeeStrategy is IFeeStrategy {
     uint256 public immutable fixedFee;
@@ -53,20 +64,41 @@ contract FeePolicyAndStrategyTest is Test {
 
     FeePolicyManager manager;
     FeeStrategyDefaultV1 defaultStrategy;
+    GatewayValidatorModule validatorModule;
+    GatewayQuoteModule quoteModule;
+    GatewayExecutionModule executionModule;
+    GatewayPrivacyModule privacyModule;
+    MockFeeToken feeToken;
     MockFixedFeeStrategy fixed42;
     MockRevertingFeeStrategy revertingStrategy;
 
     address receiver = address(0xBEEF);
-    address sourceToken = address(0x1111);
-    address destToken = address(0x2222);
+    address sourceToken;
+    address destToken;
 
     function setUp() public {
         registry = new TokenRegistry();
         vault = new PaymentKitaVault();
         router = new PaymentKitaRouter();
         gateway = new PaymentKitaGateway(address(vault), address(router), address(registry), address(this));
+        feeToken = new MockFeeToken();
+        sourceToken = address(feeToken);
+        destToken = address(feeToken);
+        registry.setTokenSupport(sourceToken, true);
+        registry.setTokenSupport(destToken, true);
 
-        defaultStrategy = new FeeStrategyDefaultV1();
+        validatorModule = new GatewayValidatorModule();
+        quoteModule = new GatewayQuoteModule();
+        executionModule = new GatewayExecutionModule();
+        privacyModule = new GatewayPrivacyModule();
+        gateway.setGatewayModules(
+            address(validatorModule),
+            address(quoteModule),
+            address(executionModule),
+            address(privacyModule)
+        );
+
+        defaultStrategy = new FeeStrategyDefaultV1(address(registry));
         fixed42 = new MockFixedFeeStrategy(42);
         revertingStrategy = new MockRevertingFeeStrategy();
         manager = new FeePolicyManager(address(defaultStrategy));
@@ -100,7 +132,7 @@ contract FeePolicyAndStrategyTest is Test {
         req.receiverBytes = abi.encode(receiver);
         req.sourceToken = sourceToken;
         req.bridgeTokenSource = sourceToken;
-        req.destToken = destToken;
+        req.destToken = sourceToken;
         req.amountInSource = 100 ether;
         req.minBridgeAmountOut = 0;
         req.minDestAmountOut = 0;
@@ -129,7 +161,7 @@ contract FeePolicyAndStrategyTest is Test {
         req.receiverBytes = abi.encode(receiver);
         req.sourceToken = sourceToken;
         req.bridgeTokenSource = sourceToken;
-        req.destToken = destToken;
+        req.destToken = sourceToken;
         req.amountInSource = 100 ether;
         req.minBridgeAmountOut = 0;
         req.minDestAmountOut = 0;
@@ -144,8 +176,8 @@ contract FeePolicyAndStrategyTest is Test {
 
         ) = gateway.quotePaymentCost(req);
 
-        // Legacy formula in gateway uses fixed cap 0.50e6.
+        // Legacy fallback formula now scales by token decimals (18 here).
         assertEq(req.destChainIdBytes, bytes(sameChainId));
-        assertEq(platformFee, 500000);
+        assertEq(platformFee, 300000000000000000);
     }
 }

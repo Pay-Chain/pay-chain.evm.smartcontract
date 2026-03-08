@@ -13,6 +13,13 @@ import "../src/integrations/hyperbridge/HyperbridgeSender.sol";
 import "../src/integrations/hyperbridge/HyperbridgeReceiver.sol";
 import "../src/integrations/layerzero/LayerZeroSenderAdapter.sol";
 import "../src/integrations/layerzero/LayerZeroReceiverAdapter.sol";
+import "../src/gateway/modules/GatewayValidatorModule.sol";
+import "../src/gateway/modules/GatewayQuoteModule.sol";
+import "../src/gateway/modules/GatewayExecutionModule.sol";
+import "../src/gateway/modules/GatewayPrivacyModule.sol";
+import "../src/gateway/fee/FeePolicyManager.sol";
+import "../src/gateway/fee/strategies/FeeStrategyDefaultV1.sol";
+import "../src/gateway/fee/strategies/FeeStrategyMarketAdaptiveV1.sol";
 
 interface IHyperbridgeCfgCommon {
     function setStateMachineId(string calldata chainId, bytes calldata stateMachineId) external;
@@ -94,13 +101,13 @@ abstract contract DeployCommon is Script {
         DeploymentConfig memory config,
         RouteBootstrapConfig memory routeConfig
     ) internal returns (
-        PaymentKitaGateway gateway_, 
-        PaymentKitaRouter router_, 
+        PaymentKitaGateway gateway_,
+        PaymentKitaRouter router_,
         TokenRegistry registry_,
         TokenSwapper swapper_
     ) {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
-        
+
         vm.startBroadcast(deployerPrivateKey);
 
         // 1. Deploy Core Components
@@ -110,8 +117,6 @@ abstract contract DeployCommon is Script {
         // Validation: Mainnet requires a real token address
         require(config.bridgeToken != address(0), "DEPLOYMENT ERROR: Bridge Token (BASE_USDC) must be set in .env");
 
-
-
         PaymentKitaVault vault = new PaymentKitaVault();
         console.log("PaymentKitaVault deployed at:", address(vault));
 
@@ -119,7 +124,7 @@ abstract contract DeployCommon is Script {
         router_ = routerInstance;
         console.log("PaymentKitaRouter deployed at:", address(router_));
 
-        // 2. Deploy Gateway
+        // 2. Deploy Gateway (V2 modular)
         gateway_ = new PaymentKitaGateway(
             address(vault),
             address(router_),
@@ -127,6 +132,45 @@ abstract contract DeployCommon is Script {
             config.feeRecipient
         );
         console.log("PaymentKitaGateway deployed at:", address(gateway_));
+
+        // 2a. Deploy and wire gateway modules + fee policy manager
+        GatewayValidatorModule validator = new GatewayValidatorModule();
+        GatewayQuoteModule quoter = new GatewayQuoteModule();
+        GatewayExecutionModule executor = new GatewayExecutionModule();
+        GatewayPrivacyModule privacy = new GatewayPrivacyModule();
+
+        FeeStrategyDefaultV1 defaultStrategy = new FeeStrategyDefaultV1(address(registry_));
+        FeePolicyManager feeManager = new FeePolicyManager(address(defaultStrategy));
+
+        bool deployAdaptive = vm.envOr("GWV2_DEPLOY_ADAPTIVE", false);
+        bool setAdaptiveActive = vm.envOr("GWV2_SET_ADAPTIVE_ACTIVE", false);
+        address adaptiveAddr = address(0);
+        if (deployAdaptive) {
+            uint256 baseBps = vm.envOr("GWV2_ADAPTIVE_BASE_BPS", uint256(20));
+            uint256 boostBps = vm.envOr("GWV2_ADAPTIVE_BOOST_BPS", uint256(10));
+            uint256 minBps = vm.envOr("GWV2_ADAPTIVE_MIN_BPS", uint256(5));
+            uint256 maxBps = vm.envOr("GWV2_ADAPTIVE_MAX_BPS", uint256(100));
+            FeeStrategyMarketAdaptiveV1 adaptive = new FeeStrategyMarketAdaptiveV1(baseBps, boostBps, minBps, maxBps);
+            adaptiveAddr = address(adaptive);
+            if (setAdaptiveActive) {
+                feeManager.setActiveStrategy(adaptiveAddr);
+            }
+        }
+
+        gateway_.setGatewayModules(address(validator), address(quoter), address(executor), address(privacy));
+        gateway_.setFeePolicyManager(address(feeManager));
+        privacy.setAuthorizedGateway(address(gateway_), true);
+
+        console.log("Gateway modules wired:");
+        console.log("- validator:", address(validator));
+        console.log("- quote:", address(quoter));
+        console.log("- execution:", address(executor));
+        console.log("- privacy:", address(privacy));
+        console.log("FeePolicyManager:", address(feeManager));
+        console.log("Default fee strategy:", address(defaultStrategy));
+        if (adaptiveAddr != address(0)) {
+            console.log("Adaptive fee strategy:", adaptiveAddr);
+        }
 
         // 3. Deploy Swapper
         swapper_ = new TokenSwapper(
@@ -157,17 +201,17 @@ abstract contract DeployCommon is Script {
             ccipSenderAddr = address(ccipSender);
             ccipSender.setAuthorizedCaller(address(router_), true);
             console.log("CCIPSender authorized caller (router):", address(router_));
-            
+
             CCIPReceiverAdapter ccipReceiver = new CCIPReceiverAdapter(config.ccipRouter, address(gateway_));
             console.log("CCIPReceiverAdapter deployed at:", address(ccipReceiver));
             ccipReceiverAddr = address(ccipReceiver);
             ccipReceiver.setSwapper(address(swapper_));
-            
+
             vault.setAuthorizedSpender(address(ccipSender), true);
             vault.setAuthorizedSpender(address(ccipReceiver), true);
             gateway_.setAuthorizedAdapter(address(ccipReceiver), true);
             swapper_.setAuthorizedCaller(address(ccipReceiver), true);
-            
+
             // Note: Register adapter in Router manually or here if chain IDs known
         }
 
@@ -184,7 +228,7 @@ abstract contract DeployCommon is Script {
             HyperbridgeReceiver hyperbridgeReceiver = new HyperbridgeReceiver(config.hyperbridgeHost, address(gateway_), address(vault));
             console.log("HyperbridgeReceiver deployed at:", address(hyperbridgeReceiver));
             hyperbridgeReceiver.setSwapper(address(swapper_));
-            
+
             vault.setAuthorizedSpender(address(hyperbridgeSender), true);
             vault.setAuthorizedSpender(address(hyperbridgeReceiver), true);
             gateway_.setAuthorizedAdapter(address(hyperbridgeReceiver), true);
@@ -215,7 +259,7 @@ abstract contract DeployCommon is Script {
         // 6. Configure Authorizations
         vault.setAuthorizedSpender(address(gateway_), true);
         vault.setAuthorizedSpender(address(swapper_), true);
-        
+
         console.log("Vault authorizations set.");
 
         // 7. Final Configuration
@@ -289,7 +333,7 @@ abstract contract DeployCommon is Script {
         }
 
         vm.stopBroadcast();
-        
+
         return (gateway_, router_, registry_, swapper_);
     }
 }

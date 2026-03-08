@@ -40,6 +40,9 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
 
     event TrustedSenderSet(uint64 indexed chainSelector, bytes sender);
     event SourceChainAllowed(uint64 indexed chainSelector, bool allowed);
+    event RouterUpdated(address indexed oldRouter, address indexed newRouter);
+    event GatewayUpdated(address indexed oldGateway, address indexed newGateway);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
     event CCIPPaymentReceived(
         bytes32 indexed paymentId,
         address receiver,
@@ -92,6 +95,27 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
 
     function setSwapper(address _swapper) external onlyOwner {
         swapper = TokenSwapper(_swapper);
+    }
+
+    function setRouter(address _ccipRouter) external onlyOwner {
+        address oldRouter = getRouter();
+        _setRouter(_ccipRouter);
+        emit RouterUpdated(oldRouter, _ccipRouter);
+    }
+
+    function setGateway(address _gateway) external onlyOwner {
+        require(_gateway != address(0), "Invalid gateway");
+        address oldVault = address(vault);
+        emit GatewayUpdated(address(gateway), _gateway);
+        gateway = PaymentKitaGateway(_gateway);
+        vault = gateway.vault();
+        emit VaultUpdated(oldVault, address(vault));
+    }
+
+    function setVault(address _vault) external onlyOwner {
+        require(_vault != address(0), "Invalid vault");
+        emit VaultUpdated(address(vault), _vault);
+        vault = PaymentKitaVault(_vault);
     }
 
     /// @notice Retry failed message processing

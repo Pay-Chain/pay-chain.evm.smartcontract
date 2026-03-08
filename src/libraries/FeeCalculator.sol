@@ -49,6 +49,28 @@ library FeeCalculator {
     }
 
     /**
+     * @notice Scale an amount across decimals.
+     */
+    function scaleByDecimals(
+        uint256 amount,
+        uint8 fromDecimals,
+        uint8 toDecimals
+    ) internal pure returns (uint256) {
+        if (fromDecimals == toDecimals) return amount;
+        if (fromDecimals < toDecimals) {
+            return amount * (10 ** uint256(toDecimals - fromDecimals));
+        }
+        return amount / (10 ** uint256(fromDecimals - toDecimals));
+    }
+
+    /**
+     * @notice Scale a fee that is defined in 6 decimals (USDC-style) into token decimals.
+     */
+    function scaleFeeByDecimals(uint256 feeAmount, uint8 tokenDecimals) internal pure returns (uint256) {
+        return scaleByDecimals(feeAmount, 6, tokenDecimals);
+    }
+
+    /**
      * @notice Calculate canonical payload length used by Track-B per-byte platform fee.
      * @dev This mirrors payment intent fields, not bridge-specific encoded payload bytes.
      */

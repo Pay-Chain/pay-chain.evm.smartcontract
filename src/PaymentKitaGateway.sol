@@ -29,6 +29,10 @@ interface IVaultSwapper {
     ) external returns (uint256 amountOut);
 }
 
+interface IERC20MetadataGateway {
+    function decimals() external view returns (uint8);
+}
+
 /**
  * @title PaymentKitaGateway
  * @notice Main Entry Point for PaymentKita Protocol
@@ -111,6 +115,8 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
     
     event VaultUpdated(address indexed oldVault, address indexed newVault);
     event RouterUpdated(address indexed oldRouter, address indexed newRouter);
+    event TokenRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event DefaultBridgeTypeSet(string destChainId, uint8 bridgeType);
     event BridgeTokenForDestSet(string destChainId, address bridgeTokenSource);
     event SourceSideSwapToggled(bool enabled);
@@ -186,6 +192,18 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         require(_router != address(0), "Invalid router");
         emit RouterUpdated(address(router), _router);
         router = PaymentKitaRouter(_router);
+    }
+
+    function setTokenRegistry(address _tokenRegistry) external onlyOwner {
+        require(_tokenRegistry != address(0), "Invalid registry");
+        emit TokenRegistryUpdated(address(tokenRegistry), _tokenRegistry);
+        tokenRegistry = TokenRegistry(_tokenRegistry);
+    }
+
+    function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        require(_feeRecipient != address(0), "Invalid fee recipient");
+        emit FeeRecipientUpdated(feeRecipient, _feeRecipient);
+        feeRecipient = _feeRecipient;
     }
 
     function setSwapper(address _swapper) external onlyOwner {
@@ -592,6 +610,8 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         uint256 swapImpactBps
     ) internal view returns (uint256) {
         if (feePolicyManager == address(0)) revert FeePolicyManagerNotConfigured();
+        uint8 tokenDecimals = _getTokenDecimals(sourceToken);
+        uint256 scaledFixedBaseFee = FeeCalculator.scaleFeeByDecimals(FIXED_BASE_FEE, tokenDecimals);
         return
             IFeePolicyManager(feePolicyManager).computePlatformFee(
                 bytes(sourceChainId),
@@ -607,7 +627,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
                 platformFeePolicy.perByteRate,
                 platformFeePolicy.minFee,
                 platformFeePolicy.maxFee,
-                FIXED_BASE_FEE,
+                scaledFixedBaseFee,
                 FEE_RATE_BPS
             );
     }
@@ -953,6 +973,15 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
     function _applyNativeFeeBuffer(uint256 fee) internal view returns (uint256) {
         if (fee == 0 || nativeFeeBufferBps == 0) return fee;
         return fee + ((fee * nativeFeeBufferBps) / 10_000);
+    }
+
+    function _getTokenDecimals(address token) internal view returns (uint8) {
+        uint8 regDec = tokenRegistry.tokenDecimals(token);
+        if (regDec > 0) return regDec;
+        try IERC20MetadataGateway(token).decimals() returns (uint8 dec) {
+            if (dec > 0) return dec;
+        } catch {}
+        return 6;
     }
 
     function _getChainId() internal view returns (string memory) {

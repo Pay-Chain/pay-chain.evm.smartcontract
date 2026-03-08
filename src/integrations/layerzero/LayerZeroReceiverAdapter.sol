@@ -25,6 +25,8 @@ contract LayerZeroReceiverAdapter is OApp {
     // ============ Events ============
 
     event TrustedPeerSet(uint32 indexed srcEid, bytes32 peer);
+    event GatewayUpdated(address indexed oldGateway, address indexed newGateway);
+    event VaultUpdated(address indexed oldVault, address indexed newVault);
     event LayerZeroMessageAccepted(
         bytes32 indexed paymentId,
         uint32 indexed srcEid,
@@ -52,6 +54,18 @@ contract LayerZeroReceiverAdapter is OApp {
 
     function setSwapper(address _swapper) external onlyOwner {
         swapper = TokenSwapper(_swapper);
+    }
+
+    function setGateway(address _gateway) external onlyOwner {
+        require(_gateway != address(0), "Invalid gateway");
+        emit GatewayUpdated(address(gateway), _gateway);
+        gateway = PaymentKitaGateway(_gateway);
+    }
+
+    function setVault(address _vault) external onlyOwner {
+        require(_vault != address(0), "Invalid vault");
+        emit VaultUpdated(address(vault), _vault);
+        vault = PaymentKitaVault(_vault);
     }
 
     // ============ LZ V2 Receiver Interface ============

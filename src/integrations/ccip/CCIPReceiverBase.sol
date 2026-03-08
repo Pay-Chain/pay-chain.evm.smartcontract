@@ -17,11 +17,11 @@ interface IAny2EVMMessageReceiver {
  * @notice Base contract for receiving CCIP messages
  */
 abstract contract CCIPReceiverBase is IAny2EVMMessageReceiver, IERC165 {
-    address internal immutable I_CCIP_ROUTER;
+    address internal iCcipRouter;
 
     constructor(address router) {
         if (router == address(0)) revert InvalidRouter(address(0));
-        I_CCIP_ROUTER = router;
+        iCcipRouter = router;
     }
 
     function supportsInterface(bytes4 interfaceId) public pure virtual override returns (bool) {
@@ -35,7 +35,12 @@ abstract contract CCIPReceiverBase is IAny2EVMMessageReceiver, IERC165 {
     function _ccipReceive(Client.Any2EVMMessage memory message) internal virtual;
 
     function getRouter() public view returns (address) {
-        return I_CCIP_ROUTER;
+        return iCcipRouter;
+    }
+
+    function _setRouter(address router) internal {
+        if (router == address(0)) revert InvalidRouter(address(0));
+        iCcipRouter = router;
     }
 
     error InvalidRouter(address router);
@@ -46,7 +51,6 @@ abstract contract CCIPReceiverBase is IAny2EVMMessageReceiver, IERC165 {
     }
 
     function _onlyRouter() internal view {
-        if (msg.sender != I_CCIP_ROUTER) revert InvalidRouter(msg.sender);
+        if (msg.sender != iCcipRouter) revert InvalidRouter(msg.sender);
     }
 }
-

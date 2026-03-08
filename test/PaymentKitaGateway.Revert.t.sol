@@ -124,7 +124,7 @@ contract PaymentKitaGatewayRevertTest is Test {
         quoteModule = new GatewayQuoteModule();
         executionModule = new GatewayExecutionModule();
         privacyModule = new GatewayPrivacyModule();
-        defaultStrategy = new FeeStrategyDefaultV1();
+        defaultStrategy = new FeeStrategyDefaultV1(address(tokenRegistry));
         feePolicyManager = new FeePolicyManager(address(defaultStrategy));
 
         // Token support

@@ -1,7 +1,0 @@
-lane,monthly_tx_volume,avg_ticket_usd,monthly_gmv_usd,bridge_fee_usd_per_tx,rpc_ops_usd_per_tx,monitoring_ops_usd_per_tx,support_risk_buffer_usd_per_tx,variable_cost_usd_per_tx,target_gross_margin_pct,floor_fee_usd,cap_fee_pct,uncapped_optimal_fee_usd_per_tx,cap_fee_usd_per_tx,recommended_fee_usd_per_tx,recommended_fee_pct_of_amount,expected_gross_margin_usd_per_tx,expected_gross_margin_pct,monthly_revenue_usd,monthly_variable_cost_usd,monthly_gross_profit_usd,breakeven_fee_pct_of_amount
-Base->Polygon,12000,85,=B2*C2,0.42,0.04,0.03,0.06,=E2+F2+G2+H2,0.45,0.50,0.0200,=MAX(K2,I2/(1-J2)),=C2*L2,=MIN(M2,N2),=O2/C2,=O2-I2,=IF(O2=0,0,P2/O2),=B2*O2,=B2*I2,=S2-T2,=I2/C2
-Base->Arbitrum,9000,95,=B3*C3,0.38,0.04,0.03,0.05,=E3+F3+G3+H3,0.45,0.50,0.0200,=MAX(K3,I3/(1-J3)),=C3*L3,=MIN(M3,N3),=O3/C3,=O3-I3,=IF(O3=0,0,P3/O3),=B3*O3,=B3*I3,=S3-T3,=I3/C3
-Base->BSC,7000,70,=B4*C4,0.55,0.05,0.03,0.07,=E4+F4+G4+H4,0.45,0.55,0.0225,=MAX(K4,I4/(1-J4)),=C4*L4,=MIN(M4,N4),=O4/C4,=O4-I4,=IF(O4=0,0,P4/O4),=B4*O4,=B4*I4,=S4-T4,=I4/C4
-Polygon->Base,6500,80,=B5*C5,0.47,0.05,0.03,0.06,=E5+F5+G5+H5,0.45,0.50,0.0200,=MAX(K5,I5/(1-J5)),=C5*L5,=MIN(M5,N5),=O5/C5,=O5-I5,=IF(O5=0,0,P5/O5),=B5*O5,=B5*I5,=S5-T5,=I5/C5
-Arbitrum->Base,5000,110,=B6*C6,0.40,0.04,0.03,0.05,=E6+F6+G6+H6,0.45,0.50,0.0200,=MAX(K6,I6/(1-J6)),=C6*L6,=MIN(M6,N6),=O6/C6,=O6-I6,=IF(O6=0,0,P6/O6),=B6*O6,=B6*I6,=S6-T6,=I6/C6
-BSC->Base,4500,75,=B7*C7,0.58,0.05,0.03,0.07,=E7+F7+G7+H7,0.45,0.55,0.0225,=MAX(K7,I7/(1-J7)),=C7*L7,=MIN(M7,N7),=O7/C7,=O7-I7,=IF(O7=0,0,P7/O7),=B7*O7,=B7*I7,=S7-T7,=I7/C7
