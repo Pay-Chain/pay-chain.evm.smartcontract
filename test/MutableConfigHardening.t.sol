@@ -69,8 +69,8 @@ contract MutableConfigHardeningTest is Test {
 
     function testBrutal_RewireLoops_AllMutableSetters() public {
         for (uint256 i = 1; i <= 20; i++) {
-            address newAddrA = address(uint160(0x100000 + i));
-            address newAddrB = address(uint160(0x200000 + i));
+            address newAddrA = vm.addr(0x100000 + i);
+            address newAddrB = vm.addr(0x200000 + i);
 
             gateway.setTokenRegistry(newAddrA);
             gateway.setFeeRecipient(newAddrB);

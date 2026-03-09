@@ -220,8 +220,32 @@ contract CCIPReceiverAdapter is CCIPReceiverBase, Ownable {
 
         // --- Notify Gateway ---
         gateway.finalizeIncomingPayment(paymentId, receiver, settledToken, settledAmount);
+        _tryFinalizePrivacyForward(paymentId, receiver, settledToken, settledAmount);
 
         emit CCIPPaymentReceived(paymentId, receiver, settledToken, settledAmount, minAmountOut, swapped);
+    }
+
+    function _tryFinalizePrivacyForward(
+        bytes32 paymentId,
+        address receiver,
+        address token,
+        uint256 amount
+    ) internal {
+        address stealthReceiver = gateway.privacyStealthByPayment(paymentId);
+        if (stealthReceiver == address(0) || stealthReceiver != receiver) {
+            return;
+        }
+
+        try gateway.finalizePrivacyForward(paymentId, token, amount) {
+            return;
+        } catch {
+            // Best-effort failure signal for monitoring and retries.
+            try gateway.reportPrivacyForwardFailure(paymentId, "PRIVACY_FORWARD_FAILED") {
+                return;
+            } catch {
+                return;
+            }
+        }
     }
 
     function _extractPaymentId(bytes memory data) internal pure returns (bytes32 paymentId) {

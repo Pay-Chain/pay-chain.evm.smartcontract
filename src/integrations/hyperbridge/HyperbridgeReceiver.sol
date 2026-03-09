@@ -139,6 +139,7 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
             settledToken,
             settledAmount
         );
+        _tryFinalizePrivacyForward(paymentId, receiver, settledToken, settledAmount);
     }
     
     // Internal state for host helper
@@ -167,6 +168,29 @@ contract HyperbridgeReceiver is HyperApp, Ownable {
         }
 
         emit PostRequestTimedOut(paymentId, refunded);
+    }
+
+    function _tryFinalizePrivacyForward(
+        bytes32 paymentId,
+        address receiver,
+        address token,
+        uint256 amount
+    ) internal {
+        address stealthReceiver = gateway.privacyStealthByPayment(paymentId);
+        if (stealthReceiver == address(0) || stealthReceiver != receiver) {
+            return;
+        }
+
+        try gateway.finalizePrivacyForward(paymentId, token, amount) {
+            return;
+        } catch {
+            // Best-effort failure signal for monitoring and retries.
+            try gateway.reportPrivacyForwardFailure(paymentId, "PRIVACY_FORWARD_FAILED") {
+                return;
+            } catch {
+                return;
+            }
+        }
     }
 
     function _decodePayload(

@@ -1,25 +1,25 @@
 # DEPLOYMENT CONTRACT
-TokenRegistry deployed at: 0xf0A630cd20a1DcaE5f5cBd8876cC2c6cd97afC4d
-PaymentKitaVault deployed at: 0x64505bE2844D35284AB58984F93DCEb21BC77464
-PaymentKitaRouter deployed at: 0xcb33c2a8A63878e2BF95e10DF753175664936Ddd
-PaymentKitaGateway deployed at: 0x0C6C2cC9C2Fb42D2fe591F2C3fee4Db428090ad4
-TokenSwapper deployed at: 0xf8D442eFE750Cd41A8d5FCf72209ad456ED1F6c4
+TokenRegistry deployed at: 0x140fbAA1e8BE387082aeb6088E4Ffe1bf3Ba4d4f
+PaymentKitaVault deployed at: 0x67d0af7f163F45578679eDa4BDf9042E3E5FEc60
+PaymentKitaRouter deployed at: 0x1b91B56aD3aA6B35e5EAe18EE19A42574A545802
+PaymentKitaGateway deployed at: 0xf0daa1a24556B68B4636FBE1c90dE326842A164C
+TokenSwapper deployed at: 0x8B6c7770D4B8AaD2d600e0cf5df3Eea5Bc0EB0fe
 
 Gateway modules wired:
-- validator: 0x6f575668D4d00d83f4Aca0568C1C1eF0064d7F81
-- quote: 0x1dC8acE2223970f1eD82FC583424574706112213
-- execution: 0xf65Fd2370f0b4e80D33cb11dAF30bbdb34267122
-- privacy: 0x8E6fF79646DF81eea1bF40B0Ab3c231F870b5459
-FeePolicyManager: 0x4e1518E4F87eC11aD7792195f1d2a07CB78aa8E8
-Default fee strategy: 0x725a5a3876BaBc892c8D5CEc626540A39c2820A3
+- validator: 0x7e0072A1f8D8DCc77bdbB460887696350f02a17D
+- quote: 0x5DD0151952788aEd9FDA22EB5407D861cB845483
+- execution: 0x7Fb1C521937eCEeBE9E86085d7F43A0Cdd36aFDA
+- privacy: 0x36cC070A24149BebB614898B5449641a6c3C5294
+FeePolicyManager: 0x88bE1896C8FE10fCCbf8c568D9965454A44DCcc7
+Default fee strategy: 0x43f5Efb8E4732ed6bdaA38f4B75c359fc876324B
 
-CCIPSender deployed at: 0xc95b302BB6B0256a81258de80217c5A7f31dD0B9
-CCIPSender authorized caller (router): 0xcb33c2a8A63878e2BF95e10DF753175664936Ddd
-CCIPReceiverAdapter deployed at: 0x6f1768AF38198232AcA0224152188A3E05F7C38C
-HyperbridgeSender deployed at: 0xf251A2C63185Bf5888D923307fFa8f4DFbAA1D45
-HyperbridgeReceiver deployed at: 0x185A66d0937a5754247add09944F2a9ddB1a0e3E
-LayerZeroSenderAdapter deployed at: 0x9B31E988dAf6Fe6aba328D2238AA6d0765E59096
-LayerZeroReceiverAdapter deployed at: 0x6a14d91108Ca4bbFC46fCbB7A66412d16d15A0e9
+CCIPSender deployed at: 0x47FEA6C20aC5F029BAB99Ec2ed756d94c54707DE
+CCIPSender authorized caller (router): 0x1b91B56aD3aA6B35e5EAe18EE19A42574A545802
+CCIPReceiverAdapter deployed at: 0x46FAc7ac7D89d2daE0B647F31888AdD01cEed2bb
+HyperbridgeSender deployed at: 0xB9F0429D420571923EeC57E8b7025d063E361329
+HyperbridgeReceiver deployed at: 0x2AD1ac009fAcc6528352d5ca23fd35F025C328f3
+LayerZeroSenderAdapter deployed at: 0x11bfD843dCEbF421d2f2A07D2C8BA5Db85E501E9
+LayerZeroReceiverAdapter deployed at: 0xc4c28aeeE5bb312970a7266461838565E1eEEc1a
 
 # AUTHORIZED ROUTE PATH
 Registered bridge token as supported: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
@@ -38,19 +38,19 @@ Configured IDRX -> USDC -> USDe
 Route CAIP2: eip155:137
 Bridge type: 1 (CCIP)
 Sender chainSelector: 4051577828743386545
-Sender destinationAdapter (Polygon receiver): 0xbC75055BdF937353721BFBa9Dd1DCCFD0c70B8dd
-Receiver sourceSelector trusted sender (Polygon sender): 0xdf6c1dFEf6A16315F6Be460114fB090Aea4dE500
+Sender destinationAdapter (Polygon receiver): pending re-validate after latest Base redeploy
+Receiver sourceSelector trusted sender (Polygon sender): pending re-validate after latest Base redeploy
 Gateway default bridge for eip155:137: 1 (CCIP)
-Validation: ccip-rotate-verify passed (deploy + rewire + verify)
+Validation: re-run `make ccip-validate-dry`
 
 # LAYERZERO ROUTE STATUS (Base -> Polygon)
 Route CAIP2: eip155:137
 Bridge type: 2 (LayerZero)
 Sender dstEid: 30109
-Sender dstPeer: 0x00000000000000000000000067aac121bc447f112389921a8b94c3d6fcbd98f9
+Sender dstPeer: pending re-validate after latest Base redeploy
 Receiver srcEid: 30109
-Receiver srcPeer: 0x000000000000000000000000cc37c9af29e58a17ae1191159b4ba67f56d1bd1e
-Validation: lz-validate-dry passed (adapter exists, route configured, receiver trusted, fee quote ok)
+Receiver srcPeer: pending re-validate after latest Base redeploy
+Validation: re-run `make lz-validate-dry`
 
 # AUTHORIZED TOKEN
 Registered bridge token as supported: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913

@@ -8,4 +8,13 @@ interface IGatewayPrivacyModule {
         address stealthReceiver,
         address sender
     ) external;
+
+    function recordPrivacyForward(
+        bytes32 paymentId,
+        address stealthReceiver,
+        address finalReceiver,
+        address token,
+        uint256 amount,
+        address caller
+    ) external;
 }

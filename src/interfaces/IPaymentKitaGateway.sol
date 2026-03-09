@@ -131,4 +131,8 @@ interface IPaymentKitaGateway {
     function previewApproval(
         PaymentRequestV2 calldata req
     ) external view returns (address approvalToken, uint256 approvalAmount, uint256 requiredNativeFee);
+
+    function finalizePrivacyForward(bytes32 paymentId, address token, uint256 amount) external;
+
+    function reportPrivacyForwardFailure(bytes32 paymentId, string calldata reason) external;
 }

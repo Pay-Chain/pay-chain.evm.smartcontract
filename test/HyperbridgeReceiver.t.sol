@@ -11,8 +11,23 @@ contract MockGateway {
     bool public markFailedCalled;
     bool public adapterRefundCalled;
     bytes32 public lastPaymentId;
+    bool public finalizePrivacyForwardCalled;
+    bool public reportPrivacyForwardFailureCalled;
+    mapping(bytes32 => address) public privacyStealthByPayment;
+
+    function setPrivacyStealth(bytes32 paymentId, address stealth) external {
+        privacyStealthByPayment[paymentId] = stealth;
+    }
 
     function finalizeIncomingPayment(bytes32, address, address, uint256) external {}
+
+    function finalizePrivacyForward(bytes32, address, uint256) external {
+        finalizePrivacyForwardCalled = true;
+    }
+
+    function reportPrivacyForwardFailure(bytes32, string calldata) external {
+        reportPrivacyForwardFailureCalled = true;
+    }
 
     function markPaymentFailed(bytes32 paymentId, string calldata) external {
         markFailedCalled = true;

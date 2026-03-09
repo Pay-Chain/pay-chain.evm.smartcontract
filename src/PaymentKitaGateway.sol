@@ -29,10 +29,6 @@ interface IVaultSwapper {
     ) external returns (uint256 amountOut);
 }
 
-interface IERC20MetadataGateway {
-    function decimals() external view returns (uint8);
-}
-
 /**
  * @title PaymentKitaGateway
  * @notice Main Entry Point for PaymentKita Protocol
@@ -75,6 +71,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
     mapping(string => address) public bridgeTokenByDestCaip2;
 
     address public feeRecipient;
+    string public currentChainCaip2;
 
     uint256 public constant FIXED_BASE_FEE = 0.50e6; // $0.50 (assuming 6 decimals USDC/USDT)
     uint256 public constant FEE_RATE_BPS = 30; // 0.3%
@@ -142,6 +139,21 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         uint256 totalSourceTokenRequired
     );
     event PrivacyPaymentCreated(bytes32 indexed paymentId, bytes32 indexed intentId, address indexed stealthReceiver);
+    event PrivacyForwardRequested(
+        bytes32 indexed paymentId,
+        address indexed stealthReceiver,
+        address indexed finalReceiver,
+        address token,
+        uint256 amount
+    );
+    event PrivacyForwardCompleted(
+        bytes32 indexed paymentId,
+        address indexed stealthReceiver,
+        address indexed finalReceiver,
+        address token,
+        uint256 amount
+    );
+    event PrivacyForwardFailed(bytes32 indexed paymentId, uint8 retryCount, string reason);
     event GatewayModulesUpdated(
         address indexed validatorModule,
         address indexed quoteModule,
@@ -160,6 +172,9 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
     uint256 public nativeFeeBufferBps = 500; // 5%
     mapping(bytes32 => bytes32) public privacyIntentByPayment;
     mapping(bytes32 => address) public privacyStealthByPayment;
+    mapping(bytes32 => address) public privacyFinalReceiverByPayment;
+    mapping(bytes32 => bool) public privacyForwardCompleted;
+    mapping(bytes32 => uint8) public privacyForwardRetryCount;
 
     // ============ Constructor ============
 
@@ -178,6 +193,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         router = PaymentKitaRouter(_router);
         tokenRegistry = TokenRegistry(_tokenRegistry);
         feeRecipient = _feeRecipient;
+        currentChainCaip2 = string(abi.encodePacked("eip155:", _uint2str(block.chainid)));
     }
 
     // ============ Admin Functions ============
@@ -293,12 +309,12 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         uint256 minAmountOut,
         uint8 bridgeOption
     ) internal returns (bytes32 paymentId) {
-        // ========== Input Validation ==========
         require(destChainIdBytes.length > 0, "Empty dest chain ID");
+        bridgeOption; // same-chain path ignores bridge option by design
 
         string memory destChainId = string(destChainIdBytes);
-        string memory sourceChainId = _getChainId();
-        bool isSameChain = keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId));
+        string memory sourceChainId = currentChainCaip2;
+        require(keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId)), "Only same-chain");
 
         address receiver = _validateCreateAndDecodeReceiver(
             receiverBytes,
@@ -308,16 +324,6 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
             false
         );
 
-        uint8 bridgeType = 255; // local-only marker for same-chain settlement
-        if (!isSameChain) {
-            bridgeType = _resolveBridgeType(destChainId, bridgeOption);
-            // TOKEN_BRIDGE mode physically moves tokens — source and dest must match
-            if (router.bridgeModes(bridgeType) == PaymentKitaRouter.BridgeMode.TOKEN_BRIDGE) {
-                require(sourceToken == destToken, "TOKEN_BRIDGE requires same token");
-            }
-        }
-
-        // ========== Fee Calculation ==========
         uint256 payloadLength = FeeCalculator.payloadLengthForPayment(
             destChainIdBytes,
             receiverBytes,
@@ -338,11 +344,9 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         );
         uint256 totalAmount = amount + platformFee;
 
-        // ========== Token Transfer ==========
         vault.pullTokens(sourceToken, msg.sender, totalAmount);
         vault.pushTokens(sourceToken, feeRecipient, platformFee);
 
-        // ========== Generate Payment ID ==========
         paymentId = PaymentLib.calculatePaymentId(
             msg.sender,
             receiver,
@@ -352,7 +356,6 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
             block.timestamp
         );
 
-        // ========== Store Payment ==========
         payments[paymentId] = Payment({
             sender: msg.sender,
             receiver: receiver,
@@ -362,95 +365,43 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
             destToken: destToken,
             amount: amount,
             fee: platformFee,
-            status: isSameChain ? PaymentStatus.Completed : PaymentStatus.Processing,
+            status: PaymentStatus.Completed,
             createdAt: block.timestamp
         });
 
         paymentCostSnapshots[paymentId] = PaymentCostSnapshot({
             platformFeeToken: platformFee,
-            bridgeFeeNative: isSameChain ? 0 : msg.value,
+            bridgeFeeNative: 0,
             bridgeFeeTokenEq: 0,
             totalSourceTokenRequired: totalAmount
         });
-        emit PaymentCostSnapshotted(paymentId, platformFee, isSameChain ? 0 : msg.value, 0, totalAmount);
+        emit PaymentCostSnapshotted(paymentId, platformFee, 0, 0, totalAmount);
         emit PlatformFeeCharged(paymentId, sourceToken, platformFee, feeRecipient);
-        if (!isSameChain) {
-            emit BridgeFeeCharged(paymentId, bridgeType, msg.value, 0);
-        }
-
-        if (isSameChain) {
-            uint256 settledAmount = amount;
-            if (sourceToken == destToken) {
-                vault.pushTokens(sourceToken, receiver, amount);
-            } else {
-                require(destToken != address(0), "Invalid destination token");
-                require(tokenRegistry.isTokenSupported(destToken), "Destination token not supported");
-                require(address(swapper) != address(0), "Swapper not configured");
-                settledAmount = IVaultSwapper(address(swapper)).swapFromVault(
-                    sourceToken,
-                    destToken,
-                    amount,
-                    minAmountOut,
-                    receiver
-                );
-            }
-
-            emit PaymentCompleted(paymentId, settledAmount);
-            if (executionModule != address(0)) {
-                IGatewayExecutionModule(executionModule).onSameChainSettled(
-                    paymentId,
-                    receiver,
-                    sourceToken == destToken ? sourceToken : destToken,
-                    settledAmount
-                );
-            }
-            emit PaymentCreated(
-                paymentId,
-                msg.sender,
-                receiver,
-                destChainId,
-                sourceToken,
-                destToken,
-                amount,
-                platformFee,
-                "SameChain"
-            );
-            return paymentId;
-        }
-
-        // ========== Route Payment ==========
-        IBridgeAdapter.BridgeMessage memory message = IBridgeAdapter.BridgeMessage({
-            paymentId: paymentId,
-            receiver: receiver,
-            sourceToken: sourceToken,
-            destToken: destToken,
-            amount: amount,
-            destChainId: destChainId,
-            minAmountOut: minAmountOut,
-            payer: msg.sender
-        });
-
-        // S5: optional source-side swap before bridge routing.
-        // Swap sourceToken -> destToken inside source vault so bridged asset already matches destination token.
-        if (enableSourceSideSwap && sourceToken != destToken) {
+        uint256 settledAmount = amount;
+        if (sourceToken == destToken) {
+            vault.pushTokens(sourceToken, receiver, amount);
+        } else {
+            require(destToken != address(0), "Invalid destination token");
             require(tokenRegistry.isTokenSupported(destToken), "Destination token not supported");
             require(address(swapper) != address(0), "Swapper not configured");
-            uint256 bridgeAmount = IVaultSwapper(address(swapper)).swapFromVault(
+            settledAmount = IVaultSwapper(address(swapper)).swapFromVault(
                 sourceToken,
                 destToken,
                 amount,
                 minAmountOut,
-                address(vault)
+                receiver
             );
-            message.sourceToken = destToken;
-            message.amount = bridgeAmount;
         }
 
-        paymentMessages[paymentId] = message;
-        paymentBridgeType[paymentId] = bridgeType;
-
-        _routeWithStoredMessage(paymentId, msg.value);
-
+        emit PaymentCompleted(paymentId, settledAmount);
+        if (executionModule != address(0)) {
+            IGatewayExecutionModule(executionModule).onSameChainSettled(
+                paymentId,
+                receiver,
+                sourceToken == destToken ? sourceToken : destToken,
+                settledAmount
+            );
+        }
         emit PaymentCreated(
             paymentId,
             msg.sender,
@@ -460,7 +411,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
             destToken,
             amount,
             platformFee,
-            bridgeType == 0 ? "Hyperbridge" : (bridgeType == 1 ? "CCIP" : "LayerZero")
+            "SameChain"
         );
     }
 
@@ -486,11 +437,22 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         require(privacy.intentId != bytes32(0), "Missing privacy intent");
         require(privacy.stealthReceiver != address(0), "Invalid stealth receiver");
 
+        address finalReceiver = _validateCreateAndDecodeReceiver(
+            req.receiverBytes,
+            req.sourceToken,
+            req.destToken,
+            req.amountInSource,
+            false
+        );
+
         bytes memory privateReceiverBytes = abi.encode(privacy.stealthReceiver);
         paymentId = _createPaymentV2Internal(req, req.bridgeOption, privateReceiverBytes);
 
         privacyIntentByPayment[paymentId] = privacy.intentId;
         privacyStealthByPayment[paymentId] = privacy.stealthReceiver;
+        privacyFinalReceiverByPayment[paymentId] = finalReceiver;
+        privacyForwardCompleted[paymentId] = false;
+
         if (privacyModule != address(0)) {
             IGatewayPrivacyModule(privacyModule).recordPrivacyIntent(
                 paymentId,
@@ -595,6 +557,41 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         
         // Note: The Adapter is responsible for transferring the tokens to the receiver.
         // We just record the event/state here.
+    }
+
+    function finalizePrivacyForward(bytes32 paymentId, address token, uint256 amount) external override {
+        require(vault.authorizedSpenders(msg.sender), "Unauthorized adapter");
+        require(!privacyForwardCompleted[paymentId], "Privacy forward already completed");
+
+        address stealthReceiver = privacyStealthByPayment[paymentId];
+        address finalReceiver = privacyFinalReceiverByPayment[paymentId];
+        require(stealthReceiver != address(0), "Privacy payment not found");
+        require(finalReceiver != address(0), "Missing final receiver");
+
+        emit PrivacyForwardRequested(paymentId, stealthReceiver, finalReceiver, token, amount);
+
+        privacyForwardCompleted[paymentId] = true;
+        if (privacyModule != address(0)) {
+            IGatewayPrivacyModule(privacyModule).recordPrivacyForward(
+                paymentId,
+                stealthReceiver,
+                finalReceiver,
+                token,
+                amount,
+                msg.sender
+            );
+        }
+
+        emit PrivacyForwardCompleted(paymentId, stealthReceiver, finalReceiver, token, amount);
+    }
+
+    function reportPrivacyForwardFailure(bytes32 paymentId, string calldata reason) external override {
+        require(vault.authorizedSpenders(msg.sender), "Unauthorized adapter");
+        require(!privacyForwardCompleted[paymentId], "Privacy forward already completed");
+        require(privacyStealthByPayment[paymentId] != address(0), "Privacy payment not found");
+
+        privacyForwardRetryCount[paymentId] += 1;
+        emit PrivacyForwardFailed(paymentId, privacyForwardRetryCount[paymentId], reason);
     }
 
     // ============ Internal Helper ============
@@ -742,7 +739,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         }
 
         string memory destChainId = string(req.destChainIdBytes);
-        string memory sourceChainId = _getChainId();
+        string memory sourceChainId = currentChainCaip2;
         bool isSameChain = keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId));
 
         uint256 payloadLength = FeeCalculator.payloadLengthForPayment(
@@ -819,7 +816,7 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
         require(req.destChainIdBytes.length > 0, "Empty dest chain ID");
 
         string memory destChainId = string(req.destChainIdBytes);
-        string memory sourceChainId = _getChainId();
+        string memory sourceChainId = currentChainCaip2;
         bool isSameChain = keccak256(bytes(destChainId)) == keccak256(bytes(sourceChainId));
 
         // Same-chain keeps existing behavior for compatibility.
@@ -978,14 +975,15 @@ contract PaymentKitaGateway is IPaymentKitaGateway, Ownable, ReentrancyGuard, Pa
     function _getTokenDecimals(address token) internal view returns (uint8) {
         uint8 regDec = tokenRegistry.tokenDecimals(token);
         if (regDec > 0) return regDec;
-        try IERC20MetadataGateway(token).decimals() returns (uint8 dec) {
-            if (dec > 0) return dec;
-        } catch {}
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        if (ok && data.length >= 32) {
+            uint256 decRaw = abi.decode(data, (uint256));
+            if (decRaw > 0 && decRaw <= type(uint8).max) {
+                // forge-lint: disable-next-line(unsafe-typecast)
+                return uint8(decRaw);
+            }
+        }
         return 6;
-    }
-
-    function _getChainId() internal view returns (string memory) {
-         return string(abi.encodePacked("eip155:", _uint2str(block.chainid)));
     }
     
     function _uint2str(uint256 _i) internal pure returns (string memory) {

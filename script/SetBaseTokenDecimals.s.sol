@@ -5,6 +5,12 @@ import "forge-std/Script.sol";
 import "../src/TokenRegistry.sol";
 
 contract SetBaseTokenDecimals is Script {
+    function _toUint8Checked(uint256 value) internal pure returns (uint8 out) {
+        require(value <= type(uint8).max, "Decimal overflow");
+        // forge-lint: disable-next-line(unsafe-typecast)
+        out = uint8(value);
+    }
+
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address registryAddr = vm.envAddress("BASE_TOKEN_REGISTRY");
@@ -28,13 +34,13 @@ contract SetBaseTokenDecimals is Script {
 
         vm.startBroadcast(pk);
 
-        if (usdc != address(0) && usdcDec > 0) registry.setTokenDecimals(usdc, uint8(usdcDec));
-        if (usde != address(0) && usdeDec > 0) registry.setTokenDecimals(usde, uint8(usdeDec));
-        if (weth != address(0) && wethDec > 0) registry.setTokenDecimals(weth, uint8(wethDec));
-        if (cbeth != address(0) && cbethDec > 0) registry.setTokenDecimals(cbeth, uint8(cbethDec));
-        if (cbbtc != address(0) && cbbtcDec > 0) registry.setTokenDecimals(cbbtc, uint8(cbbtcDec));
-        if (wbtc != address(0) && wbtcDec > 0) registry.setTokenDecimals(wbtc, uint8(wbtcDec));
-        if (idrx != address(0) && idrxDec > 0) registry.setTokenDecimals(idrx, uint8(idrxDec));
+        if (usdc != address(0) && usdcDec > 0) registry.setTokenDecimals(usdc, _toUint8Checked(usdcDec));
+        if (usde != address(0) && usdeDec > 0) registry.setTokenDecimals(usde, _toUint8Checked(usdeDec));
+        if (weth != address(0) && wethDec > 0) registry.setTokenDecimals(weth, _toUint8Checked(wethDec));
+        if (cbeth != address(0) && cbethDec > 0) registry.setTokenDecimals(cbeth, _toUint8Checked(cbethDec));
+        if (cbbtc != address(0) && cbbtcDec > 0) registry.setTokenDecimals(cbbtc, _toUint8Checked(cbbtcDec));
+        if (wbtc != address(0) && wbtcDec > 0) registry.setTokenDecimals(wbtc, _toUint8Checked(wbtcDec));
+        if (idrx != address(0) && idrxDec > 0) registry.setTokenDecimals(idrx, _toUint8Checked(idrxDec));
 
         vm.stopBroadcast();
     }

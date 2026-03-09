@@ -20,7 +20,7 @@
 	validate-gateway-v2-dry \
 	set-fee-strategy-dry set-fee-strategy-broadcast validate-fee-strategy-dry \
 	validate-gateway-selector-gate \
-	validate-bytecode-gate validate-security-regression validate-phase7-gate \
+	validate-bytecode-gate validate-security-regression validate-phase7-gate privacy-regression \
 	deploy-gateway-modular-dry deploy-gateway-modular-broadcast \
 	deploy-gateway-modular-v2-dry deploy-gateway-modular-v2-broadcast deploy-gateway-modular-v2-verify \
 	wire-gateway-modules-dry wire-gateway-modules-broadcast \
@@ -118,6 +118,7 @@ help:
 	@echo "  make validate-bytecode-gate      - enforce EIP-170 + runtime margin"
 	@echo "  make validate-security-regression - run core gateway/adapter/fee suites"
 	@echo "  make validate-phase7-gate         - run both gates"
+	@echo "  make privacy-regression           - run privacy path regression suites"
 	@echo ""
 	@echo "Gateway modular rollout (Phase 6):"
 	@echo "  make deploy-gateway-modular-dry"
@@ -548,6 +549,11 @@ validate-security-regression:
 validate-phase7-gate:
 	@$(MAKE) validate-bytecode-gate
 	@$(MAKE) validate-security-regression
+
+privacy-regression:
+	@forge test --offline --match-contract PaymentKitaGatewayV2Phase1Test --match-test Privacy
+	@forge test --offline --match-contract PrivacyForwardAdaptersPhase2Test
+	@forge test --offline --match-contract HyperbridgeReceiverTest
 
 deploy-gateway-modular-dry:
 	@test -n "$(PRIVATE_KEY)" || (echo "Missing PRIVATE_KEY" && exit 1)

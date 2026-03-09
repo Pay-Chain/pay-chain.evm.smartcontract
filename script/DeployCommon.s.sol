@@ -97,6 +97,43 @@ abstract contract DeployCommon is Script {
         return deploySystem(config, noRoute);
     }
 
+    function strictTokenRegistration() internal returns (bool) {
+        return vm.envOr("STRICT_TOKEN_REGISTRATION", true);
+    }
+
+    function requireTokenSet(address token, string memory envKey) internal pure {
+        require(token != address(0), string.concat("DEPLOYMENT ERROR: Missing token env ", envKey));
+    }
+
+    function _toUint8Checked(uint256 value) internal pure returns (uint8 out) {
+        require(value <= type(uint8).max, "Decimal overflow");
+        // forge-lint: disable-next-line(unsafe-typecast)
+        out = uint8(value);
+    }
+
+    function registerTokenWithOptionalDecimals(
+        TokenRegistry registry,
+        address token,
+        uint256 decimals,
+        bool strict,
+        string memory tokenKey,
+        string memory decimalsKey
+    ) internal {
+        if (strict) {
+            requireTokenSet(token, tokenKey);
+            require(decimals > 0, string.concat("DEPLOYMENT ERROR: Missing decimals env ", decimalsKey));
+        }
+
+        if (token == address(0)) {
+            return;
+        }
+
+        registry.setTokenSupport(token, true);
+        if (decimals > 0) {
+            registry.setTokenDecimals(token, _toUint8Checked(decimals));
+        }
+    }
+
     function deploySystem(
         DeploymentConfig memory config,
         RouteBootstrapConfig memory routeConfig
@@ -115,7 +152,7 @@ abstract contract DeployCommon is Script {
         console.log("TokenRegistry deployed at:", address(registry_));
 
         // Validation: Mainnet requires a real token address
-        require(config.bridgeToken != address(0), "DEPLOYMENT ERROR: Bridge Token (BASE_USDC) must be set in .env");
+        require(config.bridgeToken != address(0), "DEPLOYMENT ERROR: Bridge Token must be set in .env");
 
         PaymentKitaVault vault = new PaymentKitaVault();
         console.log("PaymentKitaVault deployed at:", address(vault));

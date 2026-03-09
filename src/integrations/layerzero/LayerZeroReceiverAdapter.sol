@@ -122,6 +122,7 @@ contract LayerZeroReceiverAdapter is OApp {
         }
 
         gateway.finalizeIncomingPayment(paymentId, receiver, settledToken, settledAmount);
+        _tryFinalizePrivacyForward(paymentId, receiver, settledToken, settledAmount);
 
         emit LayerZeroMessageAccepted(paymentId, _origin.srcEid, _origin.nonce, receiver, settledToken, settledAmount, swapped);
     }
@@ -159,6 +160,29 @@ contract LayerZeroReceiverAdapter is OApp {
         peerConfigured = configuredPeer != bytes32(0);
         trusted = peerConfigured && configuredPeer == _sender;
         expectedNonce = trusted ? inboundNonces[_srcEid] + 1 : 0;
+    }
+
+    function _tryFinalizePrivacyForward(
+        bytes32 paymentId,
+        address receiver,
+        address token,
+        uint256 amount
+    ) internal {
+        address stealthReceiver = gateway.privacyStealthByPayment(paymentId);
+        if (stealthReceiver == address(0) || stealthReceiver != receiver) {
+            return;
+        }
+
+        try gateway.finalizePrivacyForward(paymentId, token, amount) {
+            return;
+        } catch {
+            // Best-effort failure signal for monitoring and retries.
+            try gateway.reportPrivacyForwardFailure(paymentId, "PRIVACY_FORWARD_FAILED") {
+                return;
+            } catch {
+                return;
+            }
+        }
     }
 
     function _decodePayload(

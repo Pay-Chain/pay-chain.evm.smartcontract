@@ -6,33 +6,41 @@ import "./DeployCommon.s.sol";
 contract DeployBSC is DeployCommon {
     function run() public {
         address feeRecipient = vm.envAddress("FEE_RECIPIENT_ADDRESS");
-        
+
         DeploymentConfig memory config = DeploymentConfig({
             ccipRouter: vm.envOr("BSC_CCIP_ROUTER", address(0)),
             hyperbridgeHost: vm.envOr("BSC_HYPERBRIDGE_HOST", address(0)),
             layerZeroEndpointV2: vm.envOr("BSC_LAYERZERO_ENDPOINT_V2", address(0)),
             uniswapUniversalRouter: vm.envOr("BSC_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("BSC_POOL_MANAGER", address(0)),
-            bridgeToken: vm.envOr("BSC_USDC", address(0)), 
+            bridgeToken: vm.envOr("BSC_USDC", address(0)),
             feeRecipient: feeRecipient,
             enableSourceSideSwap: vm.envOr("BSC_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to BSC...");
-        (,, TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
+        (, , TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Register additional tokens in Registry
-        address usdc = config.bridgeToken; // Already registered in deploySystem
+        bool strict = strictTokenRegistration();
+
+        // 1. Register tokens + decimals
+        address usdc = config.bridgeToken;
         address usdt = vm.envOr("BSC_USDT", address(0));
         address wbnb = vm.envOr("BSC_WBNB", address(0));
         address idrx = vm.envOr("BSC_IDRX", address(0));
 
-        if (usdt != address(0)) registry.setTokenSupport(usdt, true);
-        if (wbnb != address(0)) registry.setTokenSupport(wbnb, true);
-        if (idrx != address(0)) registry.setTokenSupport(idrx, true);
+        uint256 usdcDec = vm.envOr("BSC_USDC_DECIMAL", uint256(0));
+        uint256 usdtDec = vm.envOr("BSC_USDT_DECIMAL", uint256(0));
+        uint256 wbnbDec = vm.envOr("BSC_WBNB_DECIMAL", uint256(0));
+        uint256 idrxDec = vm.envOr("BSC_IDRX_DECIMAL", uint256(0));
+
+        registerTokenWithOptionalDecimals(registry, usdc, usdcDec, true, "BSC_USDC", "BSC_USDC_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, usdt, usdtDec, strict, "BSC_USDT", "BSC_USDT_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, wbnb, wbnbDec, strict, "BSC_WBNB", "BSC_WBNB_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, idrx, idrxDec, strict, "BSC_IDRX", "BSC_IDRX_DECIMAL");
 
         // 2. Configure V3 Pools on Swapper
         if (usdc != address(0) && usdt != address(0)) {

@@ -10,21 +10,12 @@ contract DeployPolygon is DeployCommon {
         DeploymentConfig memory config = DeploymentConfig({
             ccipRouter: vm.envOr("POLYGON_CCIP_ROUTER", address(0)),
             hyperbridgeHost: vm.envOr("POLYGON_HYPERBRIDGE_HOST", address(0)),
-            layerZeroEndpointV2: vm.envOr(
-                "POLYGON_LAYERZERO_ENDPOINT_V2",
-                address(0)
-            ),
-            uniswapUniversalRouter: vm.envOr(
-                "POLYGON_UNIVERSAL_ROUTER",
-                address(0)
-            ),
+            layerZeroEndpointV2: vm.envOr("POLYGON_LAYERZERO_ENDPOINT_V2", address(0)),
+            uniswapUniversalRouter: vm.envOr("POLYGON_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("POLYGON_POOL_MANAGER", address(0)),
-            bridgeToken: vm.envOr("POLYGON_USDC", address(0)), // Default bridge token
+            bridgeToken: vm.envOr("POLYGON_USDC", address(0)),
             feeRecipient: feeRecipient,
-            enableSourceSideSwap: vm.envOr(
-                "POLYGON_ENABLE_SOURCE_SIDE_SWAP",
-                vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false)
-            )
+            enableSourceSideSwap: vm.envOr("POLYGON_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to Polygon...");
@@ -33,19 +24,29 @@ contract DeployPolygon is DeployCommon {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Register additional tokens in Registry
-        address usdc = config.bridgeToken; // Already registered in deploySystem
+        bool strict = strictTokenRegistration();
+
+        // 1. Register tokens + decimals
+        address usdc = config.bridgeToken;
         address idrx = vm.envOr("POLYGON_IDRX", address(0));
         address idrt = vm.envOr("POLYGON_IDRT", address(0));
         address usdt = vm.envOr("POLYGON_USDT", address(0));
         address weth = vm.envOr("POLYGON_WETH", address(0));
         address dai = vm.envOr("POLYGON_DAI", address(0));
 
-        if (idrx != address(0)) registry.setTokenSupport(idrx, true);
-        if (idrt != address(0)) registry.setTokenSupport(idrt, true);
-        if (usdt != address(0)) registry.setTokenSupport(usdt, true);
-        if (weth != address(0)) registry.setTokenSupport(weth, true);
-        if (dai != address(0)) registry.setTokenSupport(dai, true);
+        uint256 usdcDec = vm.envOr("POLYGON_USDC_DECIMAL", uint256(0));
+        uint256 idrxDec = vm.envOr("POLYGON_IDRX_DECIMAL", uint256(0));
+        uint256 idrtDec = vm.envOr("POLYGON_IDRT_DECIMAL", uint256(0));
+        uint256 usdtDec = vm.envOr("POLYGON_USDT_DECIMAL", uint256(0));
+        uint256 wethDec = vm.envOr("POLYGON_WETH_DECIMAL", uint256(0));
+        uint256 daiDec = vm.envOr("POLYGON_DAI_DECIMAL", uint256(0));
+
+        registerTokenWithOptionalDecimals(registry, usdc, usdcDec, true, "POLYGON_USDC", "POLYGON_USDC_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, idrx, idrxDec, strict, "POLYGON_IDRX", "POLYGON_IDRX_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, idrt, idrtDec, strict, "POLYGON_IDRT", "POLYGON_IDRT_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, usdt, usdtDec, strict, "POLYGON_USDT", "POLYGON_USDT_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, weth, wethDec, strict, "POLYGON_WETH", "POLYGON_WETH_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, dai, daiDec, strict, "POLYGON_DAI", "POLYGON_DAI_DECIMAL");
 
         // 2. Configure V3 Pools on Swapper
         if (usdc != address(0) && usdt != address(0)) {
@@ -61,7 +62,7 @@ contract DeployPolygon is DeployCommon {
             console.log("Configured USDC/DAI V3 pool");
         }
         if (idrt != address(0) && usdc != address(0)) {
-            swapper.setV3Pool(idrt, usdc, 500); // Assuming 500 based on standard Polygon pools
+            swapper.setV3Pool(idrt, usdc, 500);
             console.log("Configured IDRT/USDC V3 pool");
         }
         if (idrx != address(0) && usdc != address(0)) {

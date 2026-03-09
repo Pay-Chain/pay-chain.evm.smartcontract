@@ -6,32 +6,35 @@ import "./DeployCommon.s.sol";
 contract DeployBase is DeployCommon {
     function run() public {
         address feeRecipient = vm.envAddress("FEE_RECIPIENT_ADDRESS");
-        
+
         DeploymentConfig memory config = DeploymentConfig({
             ccipRouter: vm.envOr("BASE_CCIP_ROUTER", address(0)),
             hyperbridgeHost: vm.envOr("BASE_HYPERBRIDGE_HOST", address(0)),
             layerZeroEndpointV2: vm.envOr("BASE_LAYERZERO_ENDPOINT_V2", address(0)),
             uniswapUniversalRouter: vm.envOr("BASE_UNIVERSAL_ROUTER", address(0)),
             uniswapPoolManager: vm.envOr("BASE_POOL_MANAGER", address(0)),
-            bridgeToken: vm.envOr("BASE_USDC", address(0)), // Default bridge token
+            bridgeToken: vm.envOr("BASE_USDC", address(0)),
             feeRecipient: feeRecipient,
             enableSourceSideSwap: vm.envOr("BASE_ENABLE_SOURCE_SIDE_SWAP", vm.envOr("ENABLE_SOURCE_SIDE_SWAP", false))
         });
 
         console.log("Deploying to Base...");
-        (,, TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
+        (, , TokenRegistry registry, TokenSwapper swapper) = deploySystem(config);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Register additional tokens in Registry
-        address usdc = config.bridgeToken; // Already registered in deploySystem
+        bool strict = strictTokenRegistration();
+
+        // 1. Register tokens + decimals (strict mode prevents silent missing env)
+        address usdc = config.bridgeToken;
         address usde = vm.envOr("BASE_USDE", address(0));
         address weth = vm.envOr("BASE_WETH", address(0));
         address cbbtc = vm.envOr("BASE_CBBTC", address(0));
         address wbtc = vm.envOr("BASE_WBTC", address(0));
         address idrx = vm.envOr("BASE_IDRX", address(0));
         address cbeth = vm.envOr("BASE_CBETH", address(0));
+
         uint256 usdcDec = vm.envOr("BASE_USDC_DECIMAL", uint256(0));
         uint256 usdeDec = vm.envOr("BASE_USDE_DECIMAL", uint256(0));
         uint256 wethDec = vm.envOr("BASE_WETH_DECIMAL", uint256(0));
@@ -40,20 +43,13 @@ contract DeployBase is DeployCommon {
         uint256 wbtcDec = vm.envOr("BASE_WBTC_DECIMAL", uint256(0));
         uint256 idrxDec = vm.envOr("BASE_IDRX_DECIMAL", uint256(0));
 
-        if (usde != address(0)) registry.setTokenSupport(usde, true);
-        if (weth != address(0)) registry.setTokenSupport(weth, true);
-        if (cbbtc != address(0)) registry.setTokenSupport(cbbtc, true);
-        if (wbtc != address(0)) registry.setTokenSupport(wbtc, true);
-        if (idrx != address(0)) registry.setTokenSupport(idrx, true);
-        if (cbeth != address(0)) registry.setTokenSupport(cbeth, true);
-
-        if (usdc != address(0) && usdcDec > 0) registry.setTokenDecimals(usdc, uint8(usdcDec));
-        if (usde != address(0) && usdeDec > 0) registry.setTokenDecimals(usde, uint8(usdeDec));
-        if (weth != address(0) && wethDec > 0) registry.setTokenDecimals(weth, uint8(wethDec));
-        if (cbeth != address(0) && cbethDec > 0) registry.setTokenDecimals(cbeth, uint8(cbethDec));
-        if (cbbtc != address(0) && cbbtcDec > 0) registry.setTokenDecimals(cbbtc, uint8(cbbtcDec));
-        if (wbtc != address(0) && wbtcDec > 0) registry.setTokenDecimals(wbtc, uint8(wbtcDec));
-        if (idrx != address(0) && idrxDec > 0) registry.setTokenDecimals(idrx, uint8(idrxDec));
+        registerTokenWithOptionalDecimals(registry, usdc, usdcDec, true, "BASE_USDC", "BASE_USDC_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, usde, usdeDec, strict, "BASE_USDE", "BASE_USDE_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, weth, wethDec, strict, "BASE_WETH", "BASE_WETH_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, cbeth, cbethDec, strict, "BASE_CBETH", "BASE_CBETH_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, cbbtc, cbbtcDec, strict, "BASE_CBBTC", "BASE_CBBTC_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, wbtc, wbtcDec, strict, "BASE_WBTC", "BASE_WBTC_DECIMAL");
+        registerTokenWithOptionalDecimals(registry, idrx, idrxDec, strict, "BASE_IDRX", "BASE_IDRX_DECIMAL");
 
         // 2. Configure V3 Pools on Swapper
         if (idrx != address(0) && usdc != address(0)) {
@@ -72,6 +68,7 @@ contract DeployBase is DeployCommon {
             swapper.setV3Pool(usdc, usde, 100);
             console.log("Configured USDC/USDe V3 pool");
         }
+
         // 3. Configure Multi-hop Paths
         if (usdc != address(0) && cbbtc != address(0) && wbtc != address(0)) {
             address[] memory pathUsdcWbtc = new address[](3);

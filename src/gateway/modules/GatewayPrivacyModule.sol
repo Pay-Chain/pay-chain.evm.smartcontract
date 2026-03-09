@@ -15,6 +15,14 @@ contract GatewayPrivacyModule is Ownable, IGatewayPrivacyModule {
         address indexed stealthReceiver,
         address sender
     );
+    event PrivacyForwardRecorded(
+        bytes32 indexed paymentId,
+        address indexed stealthReceiver,
+        address indexed finalReceiver,
+        address token,
+        uint256 amount,
+        address caller
+    );
 
     constructor() Ownable(msg.sender) {}
 
@@ -31,5 +39,17 @@ contract GatewayPrivacyModule is Ownable, IGatewayPrivacyModule {
     ) external override {
         if (!authorizedGateway[msg.sender]) revert UnauthorizedGateway(msg.sender);
         emit PrivacyIntentRecorded(paymentId, intentId, stealthReceiver, sender);
+    }
+
+    function recordPrivacyForward(
+        bytes32 paymentId,
+        address stealthReceiver,
+        address finalReceiver,
+        address token,
+        uint256 amount,
+        address caller
+    ) external override {
+        if (!authorizedGateway[msg.sender]) revert UnauthorizedGateway(msg.sender);
+        emit PrivacyForwardRecorded(paymentId, stealthReceiver, finalReceiver, token, amount, caller);
     }
 }

@@ -341,6 +341,73 @@ contract PaymentKitaGatewayV2Phase1Test is Test {
         assertEq(storedReceiver, privacy.stealthReceiver);
         assertEq(gateway.privacyIntentByPayment(pid), privacy.intentId);
         assertEq(gateway.privacyStealthByPayment(pid), privacy.stealthReceiver);
+        assertEq(gateway.privacyFinalReceiverByPayment(pid), receiver);
+        assertEq(gateway.privacyForwardCompleted(pid), false);
+    }
+
+    function testPrivacyForwardFinalize_AuthorizedAdapterMarksCompleted() public {
+        IPaymentKitaGateway.PaymentRequestV2 memory req = _baseReq(address(bridgeToken), address(0), address(destToken));
+        req.mode = IPaymentKitaGateway.PaymentMode.PRIVACY;
+
+        IPaymentKitaGateway.PrivateRouting memory privacy;
+        privacy.intentId = keccak256("intent-forward-ok");
+        privacy.stealthReceiver = address(0xABCD);
+
+        vm.startPrank(user);
+        bridgeToken.approve(address(vault), type(uint256).max);
+        bytes32 pid = gateway.createPaymentPrivate(req, privacy);
+        vm.stopPrank();
+
+        vm.prank(address(adapter));
+        gateway.finalizePrivacyForward(pid, address(destToken), 77e18);
+
+        assertEq(gateway.privacyForwardCompleted(pid), true);
+
+        vm.prank(address(adapter));
+        vm.expectRevert(bytes("Privacy forward already completed"));
+        gateway.finalizePrivacyForward(pid, address(destToken), 77e18);
+    }
+
+    function testPrivacyForwardFailure_AuthorizedAdapterIncrementsRetry() public {
+        IPaymentKitaGateway.PaymentRequestV2 memory req = _baseReq(address(bridgeToken), address(0), address(destToken));
+        req.mode = IPaymentKitaGateway.PaymentMode.PRIVACY;
+
+        IPaymentKitaGateway.PrivateRouting memory privacy;
+        privacy.intentId = keccak256("intent-forward-fail");
+        privacy.stealthReceiver = address(0xABCD);
+
+        vm.startPrank(user);
+        bridgeToken.approve(address(vault), type(uint256).max);
+        bytes32 pid = gateway.createPaymentPrivate(req, privacy);
+        vm.stopPrank();
+
+        vm.prank(address(adapter));
+        gateway.reportPrivacyForwardFailure(pid, "fail-1");
+        assertEq(gateway.privacyForwardRetryCount(pid), 1);
+
+        vm.prank(address(adapter));
+        gateway.reportPrivacyForwardFailure(pid, "fail-2");
+        assertEq(gateway.privacyForwardRetryCount(pid), 2);
+    }
+
+    function testPrivacyForward_RevertWhenUnauthorized() public {
+        IPaymentKitaGateway.PaymentRequestV2 memory req = _baseReq(address(bridgeToken), address(0), address(destToken));
+        req.mode = IPaymentKitaGateway.PaymentMode.PRIVACY;
+
+        IPaymentKitaGateway.PrivateRouting memory privacy;
+        privacy.intentId = keccak256("intent-forward-unauth");
+        privacy.stealthReceiver = address(0xABCD);
+
+        vm.startPrank(user);
+        bridgeToken.approve(address(vault), type(uint256).max);
+        bytes32 pid = gateway.createPaymentPrivate(req, privacy);
+        vm.stopPrank();
+
+        vm.expectRevert(bytes("Unauthorized adapter"));
+        gateway.finalizePrivacyForward(pid, address(destToken), 1e18);
+
+        vm.expectRevert(bytes("Unauthorized adapter"));
+        gateway.reportPrivacyForwardFailure(pid, "fail");
     }
 
     function testV2CreatePayment_RevertInvalidBridgeOption() public {
